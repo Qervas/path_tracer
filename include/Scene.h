@@ -51,24 +51,19 @@ public:
     // Find the closest intersection in the scene
     [[nodiscard]] std::optional<SceneIntersection> intersect(const Ray& ray) const {
         std::optional<SceneIntersection> closest_hit;
-        double min_distance = std::numeric_limits<double>::infinity();
+        double closest_distance = std::numeric_limits<double>::infinity();
 
         // Check implicit objects
         for (const auto& object : implicit_objects_) {
             if (auto hit = object->intersect(ray)) {
-                if (hit->distance < min_distance) {
-                    min_distance = hit->distance;
+                if (hit->distance < closest_distance) {
+                    closest_distance = hit->distance;
                     closest_hit = createSceneIntersection(*hit, object.get(), nullptr);
-                }
-            }
-        }
-
-        // Check polygons
-        for (const auto& polygon : polygons_) {
-            if (auto hit = polygon->intersect(ray)) {
-                if (hit->distance < min_distance) {
-                    min_distance = hit->distance;
-                    closest_hit = createSceneIntersection(*hit, nullptr, polygon.get());
+                    
+                    // Set emission for emissive objects
+                    if (object->isEmissive()) {
+                        closest_hit->emission = object->getEmissionColor() * object->getEmissionStrength();
+                    }
                 }
             }
         }

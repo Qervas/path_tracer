@@ -1,7 +1,9 @@
 #pragma once
 
+#include "Vec3.h"
 #include <random>
 #include <thread>
+#include <chrono>
 
 class Random {
 private:
@@ -28,8 +30,22 @@ public:
     [[nodiscard]] static double get(double min, double max) {
         return min + (max - min) * get();
     }
+
+    // Generate a random point in unit disk
+    [[nodiscard]] static Vec3d randomInUnitDisk() {
+        while (true) {
+            Vec3d p(
+                2.0 * get() - 1.0,  // Range [-1,1]
+                2.0 * get() - 1.0,  // Range [-1,1]
+                0.0                 // Disk is in XY plane
+            );
+            if (p.length_squared() < 1.0) {
+                return p;
+            }
+        }
+    }
 };
 
 // Define thread_local static members
 thread_local std::mt19937 Random::generator_;
-thread_local std::uniform_real_distribution<double> Random::distribution_(0.0, 1.0); 
+thread_local std::uniform_real_distribution<double> Random::distribution_(0.0, 1.0);

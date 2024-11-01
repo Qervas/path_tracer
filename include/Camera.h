@@ -9,6 +9,8 @@
 #include <cmath>
 #include <fstream>
 #include <string>
+#include <mutex>
+#include <atomic>
 
 class Camera {
 public:
@@ -39,6 +41,12 @@ private:
 
     // Image buffer
     std::vector<ColorDBL> image_buffer_;
+
+    // Add mutex for thread-safe pixel access
+    mutable std::mutex pixel_mutex_;
+    
+    // Add progress tracking
+    std::atomic<uint32_t> completed_pixels_{0};
 
 public:
     Camera(const Point3d& origin, const Point3d& target, const Vec3d& up, const Settings& settings)
@@ -112,14 +120,29 @@ public:
 
     // Get ray for specific pixel
     [[nodiscard]] Ray getRayForPixel(uint32_t x, uint32_t y, bool jitter = true) const {
-        double u = static_cast<double>(x) / (settings_.width - 1);
-        double v = static_cast<double>(y) / (settings_.height - 1);
-        return getRay(u, v, jitter);
+        // Convert pixel coordinates to normalized device coordinates (-1 to 1)
+        double u = (static_cast<double>(x) + (jitter ? Random::get() : 0.5)) / (settings_.width - 1);
+        double v = 1.0 - (static_cast<double>(y) + (jitter ? Random::get() : 0.5)) / (settings_.height - 1);  // Flip Y coordinate
+
+        Point3d pixel_loc = top_left_ + u * horizontal_ + v * vertical_;
+        Vec3d direction;
+
+        if (settings_.use_dof) {
+            // Depth of field calculation
+            Point3d lens_point = origin_ + lens_radius_ * Random::randomInUnitDisk();
+            Point3d focus_point = pixel_loc;
+            direction = (focus_point - lens_point).normalized();
+            return Ray(lens_point, direction);
+        } else {
+            direction = (pixel_loc - origin_).normalized();
+            return Ray(origin_, direction);
+        }
     }
 
     // Set color for a specific pixel
     void setPixel(uint32_t x, uint32_t y, const ColorDBL& color) {
         if (x < settings_.width && y < settings_.height) {
+            std::lock_guard<std::mutex> lock(pixel_mutex_);
             image_buffer_[y * settings_.width + x] = color;
         }
     }
@@ -127,6 +150,7 @@ public:
     // Get color for a specific pixel
     [[nodiscard]] ColorDBL getPixel(uint32_t x, uint32_t y) const {
         if (x < settings_.width && y < settings_.height) {
+            std::lock_guard<std::mutex> lock(pixel_mutex_);
             return image_buffer_[y * settings_.width + x];
         }
         return ColorDBL();
@@ -134,7 +158,8 @@ public:
 
     // Convert and save the image to a file
     void saveImage(const std::string& filename) const {
-        // Create header for PPM format
+        std::lock_guard<std::mutex> lock(pixel_mutex_);
+        
         std::ofstream out(filename, std::ios::binary);
         if (!out) {
             throw std::runtime_error("Failed to open file: " + filename);
@@ -142,9 +167,7 @@ public:
 
         out << "P6\n" << settings_.width << " " << settings_.height << "\n255\n";
 
-        // Write pixel data
         for (const auto& color : image_buffer_) {
-            // Apply gamma correction and convert to 8-bit color
             ColorRGB pixel(color.gamma(2.2));
             out.put(static_cast<char>(pixel.r));
             out.put(static_cast<char>(pixel.g));
@@ -152,6 +175,16 @@ public:
         }
 
         out.close();
+    }
+
+    //  Add a batch update method for better performance
+    void setPixelBatch(const std::vector<std::tuple<uint32_t, uint32_t, ColorDBL>>& pixels) {
+        std::lock_guard<std::mutex> lock(pixel_mutex_);
+        for (const auto& [x, y, color] : pixels) {
+            if (x < settings_.width && y < settings_.height) {
+                image_buffer_[y * settings_.width + x] = color;
+            }
+        }
     }
 
     // Camera movement methods
@@ -214,4 +247,17 @@ public:
     [[nodiscard]] const Settings& getSettings() const noexcept { return settings_; }
     [[nodiscard]] uint32_t getWidth() const noexcept { return settings_.width; }
     [[nodiscard]] uint32_t getHeight() const noexcept { return settings_.height; }
+
+    // Add progress tracking methods
+    void resetProgress() noexcept {
+        completed_pixels_ = 0;
+    }
+
+    [[nodiscard]] double getProgress() const noexcept {
+        return static_cast<double>(completed_pixels_) / (settings_.width * settings_.height);
+    }
+
+    void incrementProgress(uint32_t count = 1) noexcept {
+        completed_pixels_ += count;
+    }
 }; 
