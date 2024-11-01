@@ -48,6 +48,8 @@ private:
     // Add progress tracking
     std::atomic<uint32_t> completed_pixels_{0};
 
+    double pitch_{0}, yaw_{0};
+
 public:
     Camera(const Point3d& origin, const Point3d& target, const Vec3d& up, const Settings& settings)
         : origin_(origin)
@@ -215,30 +217,13 @@ public:
 
     // Rotate camera around its axes
     void rotateYaw(double angle) {
-        // Rotate around world up vector
-        Vec3d forward = -w_;
-        double cos_angle = std::cos(angle);
-        double sin_angle = std::sin(angle);
-        
-        forward = Vec3d(
-            forward.x * cos_angle - forward.z * sin_angle,
-            forward.y,
-            forward.x * sin_angle + forward.z * cos_angle
-        );
-
-        target_ = origin_ + forward;
-        initialize();
+        yaw_ = angle;
+        updateRotation();
     }
 
     void rotatePitch(double angle) {
-        // Rotate around local right vector
-        Vec3d forward = -w_;
-        double cos_angle = std::cos(angle);
-        double sin_angle = std::sin(angle);
-        
-        Vec3d new_forward = forward * cos_angle + v_ * sin_angle;
-        target_ = origin_ + new_forward;
-        initialize();
+        pitch_ = angle;
+        updateRotation();
     }
 
     // Getters
@@ -259,5 +244,27 @@ public:
 
     void incrementProgress(uint32_t count = 1) noexcept {
         completed_pixels_ += count;
+    }
+
+    [[nodiscard]] const std::vector<ColorDBL>& getImageBuffer() const { return image_buffer_; }
+
+    void lookAt(const Point3d& from, const Point3d& to, const Vec3d& up) {
+        origin_ = from;
+        target_ = to;
+        up_ = up;
+        initialize();
+    }
+
+private:
+    void updateRotation() {
+        // Calculate forward vector from pitch and yaw
+        Vec3d forward(
+            std::cos(pitch_) * std::cos(yaw_),
+            std::sin(pitch_),
+            std::cos(pitch_) * std::sin(yaw_)
+        );
+        
+        target_ = origin_ + forward;
+        initialize();
     }
 }; 

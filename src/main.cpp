@@ -3,27 +3,13 @@
 #include "ImplicitObject.h"
 #include "Polygon.h"
 #include "Random.h"
+#include "WindowX11.h"
 #include <iostream>
 #include <memory>
 #include <thread>
-#include <mutex>
 #include <atomic>
 #include <vector>
-
-std::mutex cout_mutex;  // Global mutex for cout synchronization
-
-// Add progress monitoring thread function
-void monitorProgress(const Camera& camera, std::atomic<bool>& rendering) {
-    while (rendering) {
-        {
-            std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << "\rProgress: " 
-                     << static_cast<int>(camera.getProgress() * 100) << "%" 
-                     << std::flush;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-}
+#include <chrono>
 
 void renderRegion(Camera& camera, const Scene& scene, 
                  uint32_t start_y, uint32_t end_y,
@@ -40,47 +26,45 @@ void renderRegion(Camera& camera, const Scene& scene,
             for (int s = 0; s < samples_per_pixel; ++s) {
                 Ray ray = camera.getRayForPixel(x, y, true);
                 if (auto hit = scene.intersect(ray)) {
-                    ColorDBL direct_light(0, 0, 0);
-                    
-                    // Add emission if the object is emissive
+                    // Start with ambient light to ensure everything is visible
+                    ColorDBL ambient(0.1, 0.1, 0.1);
+                    pixel_color += ambient;
+
                     if (hit->implicitObject && hit->implicitObject->isEmissive()) {
                         pixel_color += hit->emission;
-                        continue;  // Skip direct lighting for emissive objects
-                    }
-
-                    // Sample points on light sources
-                    for (const auto& light_point : scene.sampleLights(8)) {
-                        Vec3d light_dir = (light_point - hit->point).normalized();
-                        double cos_theta = std::max(0.0, dot(hit->normal, light_dir));
-                        
-                        // Check visibility
-                        if (cos_theta > 0 && scene.isVisible(hit->point, light_point)) {
-                            // Calculate light attenuation with more realistic falloff
-                            double light_distance = (light_point - hit->point).length();
-                            double attenuation = 1.0 / (1.0 + light_distance * light_distance);
+                    } else {
+                        // Add direct lighting
+                        ColorDBL direct_light(0, 0, 0);
+                        for (const auto& light_point : scene.sampleLights(1)) {
+                            Vec3d light_dir = (light_point - hit->point).normalized();
+                            double cos_theta = std::max(0.0, dot(hit->normal, light_dir));
                             
-                            direct_light += hit->color * cos_theta * attenuation * 20.0;  // Reduced intensity
+                            if (cos_theta > 0 && scene.isVisible(hit->point, light_point)) {
+                                double light_distance = (light_point - hit->point).length();
+                                double attenuation = 1.0 / (light_distance * light_distance);
+                                direct_light += hit->color * cos_theta * attenuation * 50.0; // Increased intensity
+                            }
                         }
+                        pixel_color += direct_light;
                     }
-                    
-                    pixel_color += direct_light;
+                } else {
+                    // Add background color for rays that don't hit anything
+                    pixel_color += ColorDBL(0.2, 0.2, 0.2);
                 }
             }
 
+            // Average samples and apply gamma correction
             pixel_color = pixel_color / samples_per_pixel;
-            
-            // Apply gamma correction
             pixel_color = ColorDBL(
-                std::pow(pixel_color.r(), 1.0/2.2),
-                std::pow(pixel_color.g(), 1.0/2.2),
-                std::pow(pixel_color.b(), 1.0/2.2)
+                std::pow(std::clamp(pixel_color.r(), 0.0, 1.0), 1.0/2.2),
+                std::pow(std::clamp(pixel_color.g(), 0.0, 1.0), 1.0/2.2),
+                std::pow(std::clamp(pixel_color.b(), 0.0, 1.0), 1.0/2.2)
             );
             
             pixel_batch.emplace_back(x, y, pixel_color);
         }
 
         camera.setPixelBatch(pixel_batch);
-        camera.incrementProgress(camera.getWidth());
     }
 }
 
@@ -88,125 +72,166 @@ int main() {
     Random::init();
     Scene scene;
 
-    // Cornell Box dimensions - adjust for better proportions
-    const double room_size = 4.0;  // Slightly smaller for better view
+    // Create window first
+    WindowX11 window(1280, 720, "Real-time Ray Tracer");
+
+    // Cornell Box dimensions
+    const double room_size = 4.0;
     const double half_size = room_size / 2.0;
     
-    // Room walls with higher reflectivity
-    // Back wall (white)
+    // Room walls setup (same as your original setup)
     scene.addImplicitObject(std::make_shared<Plane>(
         Point3d(0, 0, -half_size),
         Vec3d(0, 0, 1),
-        ColorDBL(0.9, 0.9, 0.9)  // Brighter white
+        ColorDBL(0.9, 0.9, 0.9)
     ));
     
-    // Left wall (red)
     scene.addImplicitObject(std::make_shared<Plane>(
         Point3d(-half_size, 0, 0),
         Vec3d(1, 0, 0),
-        ColorDBL(0.9, 0.2, 0.2)  // Brighter red
+        ColorDBL(0.9, 0.2, 0.2)
     ));
     
-    // Right wall (green)
     scene.addImplicitObject(std::make_shared<Plane>(
         Point3d(half_size, 0, 0),
         Vec3d(-1, 0, 0),
-        ColorDBL(0.2, 0.9, 0.2)  // Brighter green
+        ColorDBL(0.2, 0.9, 0.2)
     ));
     
-    // Floor (white)
     scene.addImplicitObject(std::make_shared<Plane>(
         Point3d(0, -half_size, 0),
         Vec3d(0, 1, 0),
         ColorDBL(0.9, 0.9, 0.9)
     ));
     
-    // Ceiling (white)
     scene.addImplicitObject(std::make_shared<Plane>(
         Point3d(0, half_size, 0),
         Vec3d(0, -1, 0),
         ColorDBL(0.9, 0.9, 0.9)
     ));
 
-    // Camera setup with classic Cornell box view
+    // Camera settings for real-time viewing
     Camera::Settings camera_settings;
-    camera_settings.width = 800;
-    camera_settings.height = 800;  // Make it square like classic Cornell box
-    camera_settings.fov = 45.0;     // Classic narrow FOV for Cornell box
+    camera_settings.width = window.getWidth();
+    camera_settings.height = window.getHeight();
+    camera_settings.fov = 90.0;  // Wider FOV for FPS-style viewing
     camera_settings.use_dof = false;
 
-    // Position camera at the back wall, looking forward
+    // Initial camera position
     Camera camera(
-        Point3d(0, 0, -half_size),    // origin
-        Point3d(0, -half_size * 0.99, 0),                 // target
-        Vec3d(0, 1, 0),                    // Up vector
+        Point3d(0, 0, half_size * 0.8),  // Start position
+        Point3d(0, 0, -1),               // Looking into the room
+        Vec3d(0, 1, 0),                  // Up vector
         camera_settings
     );
 
-    // Adjust sphere positions for classic view
-    // Large metallic sphere
+    // Add objects (same as your original setup)
     scene.addImplicitObject(std::make_shared<Sphere>(
-        Point3d(-1.0, -half_size + 0.8, -half_size + 1.0),  // Left tall sphere
+        Point3d(-1.0, -half_size + 0.8, -half_size + 1.0),
         0.8,
-        ColorDBL(0.95, 0.95, 0.95)  // Metallic white
+        ColorDBL(0.95, 0.95, 0.95)
     ));
 
-    // Smaller colored sphere
     scene.addImplicitObject(std::make_shared<Sphere>(
-        Point3d(1.0, -half_size + 0.4, -half_size + 1.0),   // Right short sphere
+        Point3d(1.0, -half_size + 0.4, -half_size + 1.0),
         0.4,
-        ColorDBL(0.7, 0.3, 0.3)  // Reddish
+        ColorDBL(0.7, 0.3, 0.3)
     ));
 
-    // Light source - centered near ceiling
     auto light = std::make_shared<Sphere>(
-        Point3d(0, half_size - 0.1, 0),  // Centered light
-        0.2,  // Slightly larger for better illumination
+        Point3d(0, half_size - 0.1, 0),
+        0.2,
         ColorDBL(1.0, 1.0, 1.0)
     );
-    light->makeEmissive(ColorDBL(1.0, 1.0, 1.0), 25.0);  // Increased brightness a bit
+    light->makeEmissive(ColorDBL(1.0, 1.0, 1.0), 100.0);
     scene.addImplicitObject(light);
 
-    // Render settings
-    const int samples_per_pixel = 100;  // More samples for less noise
-    
-    std::cout << "Rendering at " << camera_settings.width << "x" << camera_settings.height 
-              << " with " << samples_per_pixel << " samples per pixel..." << std::endl;
+    // Real-time rendering settings
+    const int samples_per_frame = 1;  // Reduced samples for real-time
+    double mouse_dx = 0, mouse_dy = 0;
+    double yaw = 0, pitch = 0;
+    const double mouse_sensitivity = 0.002;
+    const double move_speed = 0.1;
 
-    // Reset progress
-    camera.resetProgress();
+    std::cout << "Controls:\n"
+              << "Tab: Toggle mouse capture\n"
+              << "WASD: Move camera\n"
+              << "Mouse: Look around\n"
+              << "Escape: Exit\n" << std::endl;
 
-    // Progress tracking
-    std::atomic<bool> rendering{true};
-    std::thread progress_thread(monitorProgress, std::ref(camera), std::ref(rendering));
+    // Main rendering loop
+    while (window.processEvents(mouse_dx, mouse_dy)) {
+        auto frame_start = std::chrono::high_resolution_clock::now();
 
-    // Calculate number of threads and rows per thread
-    const uint32_t num_threads = std::thread::hardware_concurrency();
-    const uint32_t rows_per_thread = camera.getHeight() / num_threads;
+        // Update camera rotation
+        yaw += mouse_dx * mouse_sensitivity;
+        pitch = std::clamp(pitch - mouse_dy * mouse_sensitivity, 
+                          -M_PI/2.0 + 0.1, M_PI/2.0 - 0.1);
 
-    // Create and start threads
-    std::vector<std::thread> threads;
-    std::cout << "Rendering using " << num_threads << " threads..." << std::endl;
+        // Update camera orientation
+        Vec3d forward(
+            std::cos(pitch) * std::cos(yaw),
+            std::sin(pitch),
+            std::cos(pitch) * std::sin(yaw)
+        );
+        
+        camera.lookAt(camera.getPosition(), camera.getPosition() + forward, Vec3d(0, 1, 0));
 
-    for (uint32_t i = 0; i < num_threads; ++i) {
-        uint32_t start_row = i * rows_per_thread;
-        uint32_t end_row = (i == num_threads - 1) ? camera.getHeight() : (i + 1) * rows_per_thread;
-        threads.emplace_back(renderRegion, std::ref(camera), std::ref(scene), 
-                           start_row, end_row, samples_per_pixel);
+        // Update camera position based on keyboard input
+        Vec3d right = cross(forward, Vec3d(0, 1, 0)).normalized();
+        Point3d pos = camera.getPosition();
+        
+        if (window.isKeyPressed(XK_w)) {
+            pos = pos + forward * move_speed;
+        }
+        if (window.isKeyPressed(XK_s)) {
+            pos = pos - forward * move_speed;
+        }
+        if (window.isKeyPressed(XK_a)) {
+            pos = pos - right * move_speed;
+        }
+        if (window.isKeyPressed(XK_d)) {
+            pos = pos + right * move_speed;
+        }
+        if (window.isKeyPressed(XK_space)) {
+            pos = pos + Vec3d(0, 1, 0) * move_speed;
+        }
+        if (window.isKeyPressed(XK_Control_L)) {
+            pos = pos - Vec3d(0, 1, 0) * move_speed;
+        }
+
+        camera.lookAt(pos, pos + forward, Vec3d(0, 1, 0));
+
+        // Reset progress for new frame
+        camera.resetProgress();
+
+        // Render frame
+        const uint32_t num_threads = std::thread::hardware_concurrency();
+        const uint32_t rows_per_thread = camera.getHeight() / num_threads;
+
+        std::vector<std::thread> threads;
+        for (uint32_t i = 0; i < num_threads; ++i) {
+            uint32_t start_row = i * rows_per_thread;
+            uint32_t end_row = (i == num_threads - 1) ? camera.getHeight() : (i + 1) * rows_per_thread;
+            threads.emplace_back(renderRegion, std::ref(camera), std::ref(scene), 
+                               start_row, end_row, samples_per_frame);
+        }
+
+        for (auto& thread : threads) {
+            thread.join();
+        }
+
+        // Update display
+        window.updateScreen(camera.getImageBuffer());
+
+        // Calculate frame time
+        auto frame_end = std::chrono::high_resolution_clock::now();
+        auto frame_time = std::chrono::duration_cast<std::chrono::milliseconds>(frame_end - frame_start).count();
+        
+        // Display FPS in window title
+        std::string title = "Real-time Ray Tracer - FPS: " + std::to_string(1000.0 / frame_time);
+        window.setTitle(title);
     }
-
-    // Wait for all threads to complete
-    for (auto& thread : threads) {
-        thread.join();
-    }
-
-    // Stop progress monitoring
-    rendering = false;
-    progress_thread.join();
-
-    std::cout << "\nSaving image..." << std::endl;
-    camera.saveImage("cornell_box_hd.ppm");
-    std::cout << "Done!" << std::endl;
 
     return 0;
 }

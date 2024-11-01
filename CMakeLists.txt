@@ -34,6 +34,9 @@ else()
     )
 endif()
 
+find_package(X11 REQUIRED)
+include_directories(${X11_INCLUDE_DIR})
+
 # Include directories
 include_directories(
     ${PROJECT_SOURCE_DIR}/include
@@ -48,6 +51,9 @@ file(GLOB_RECURSE SOURCES
 
 # Main executable
 add_executable(${PROJECT_NAME} ${SOURCES})
+
+# Link X11 libraries
+target_link_libraries(${PROJECT_NAME} ${X11_LIBRARIES})
 
 # Enable testing
 enable_testing()
