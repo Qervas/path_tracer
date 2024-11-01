@@ -13,27 +13,21 @@
 
 void renderRegion(Camera& camera, const Scene& scene, 
                  uint32_t start_y, uint32_t end_y,
-                 int samples_per_pixel) {
-    std::vector<std::tuple<uint32_t, uint32_t, ColorDBL>> pixel_batch;
-    pixel_batch.reserve(camera.getWidth());
-
+                 int samples_per_pixel,
+                 std::vector<ColorDBL>& frame_buffer) {
     for (uint32_t y = start_y; y < end_y; ++y) {
-        pixel_batch.clear();
-        
         for (uint32_t x = 0; x < camera.getWidth(); ++x) {
             ColorDBL pixel_color(0, 0, 0);
-
+            
             for (int s = 0; s < samples_per_pixel; ++s) {
                 Ray ray = camera.getRayForPixel(x, y, true);
                 if (auto hit = scene.intersect(ray)) {
-                    // Start with ambient light to ensure everything is visible
                     ColorDBL ambient(0.1, 0.1, 0.1);
                     pixel_color += ambient;
 
                     if (hit->implicitObject && hit->implicitObject->isEmissive()) {
                         pixel_color += hit->emission;
                     } else {
-                        // Add direct lighting
                         ColorDBL direct_light(0, 0, 0);
                         for (const auto& light_point : scene.sampleLights(1)) {
                             Vec3d light_dir = (light_point - hit->point).normalized();
@@ -42,29 +36,19 @@ void renderRegion(Camera& camera, const Scene& scene,
                             if (cos_theta > 0 && scene.isVisible(hit->point, light_point)) {
                                 double light_distance = (light_point - hit->point).length();
                                 double attenuation = 1.0 / (light_distance * light_distance);
-                                direct_light += hit->color * cos_theta * attenuation * 50.0; // Increased intensity
+                                direct_light += hit->color * cos_theta * attenuation * 50.0;
                             }
                         }
                         pixel_color += direct_light;
                     }
                 } else {
-                    // Add background color for rays that don't hit anything
                     pixel_color += ColorDBL(0.2, 0.2, 0.2);
                 }
             }
 
-            // Average samples and apply gamma correction
             pixel_color = pixel_color / samples_per_pixel;
-            pixel_color = ColorDBL(
-                std::pow(std::clamp(pixel_color.r(), 0.0, 1.0), 1.0/2.2),
-                std::pow(std::clamp(pixel_color.g(), 0.0, 1.0), 1.0/2.2),
-                std::pow(std::clamp(pixel_color.b(), 0.0, 1.0), 1.0/2.2)
-            );
-            
-            pixel_batch.emplace_back(x, y, pixel_color);
+            frame_buffer[y * camera.getWidth() + x] = pixel_color;
         }
-
-        camera.setPixelBatch(pixel_batch);
     }
 }
 
@@ -159,6 +143,12 @@ int main() {
               << "Mouse: Look around\n"
               << "Escape: Exit\n" << std::endl;
 
+    // Add these variables at the start of main() after window creation:
+    std::vector<ColorDBL> accumulated_buffer(window.getWidth() * window.getHeight(), ColorDBL(0,0,0));
+    std::vector<ColorDBL> frame_buffer(window.getWidth() * window.getHeight());
+    uint32_t frame_count = 0;
+    bool camera_moved = false;
+
     // Main rendering loop
     while (window.processEvents(mouse_dx, mouse_dy)) {
         auto frame_start = std::chrono::high_resolution_clock::now();
@@ -202,8 +192,17 @@ int main() {
 
         camera.lookAt(pos, pos + forward, Vec3d(0, 1, 0));
 
-        // Reset progress for new frame
-        camera.resetProgress();
+        // Check if camera moved
+        camera_moved = mouse_dx != 0 || mouse_dy != 0 || 
+                      window.isKeyPressed(XK_w) || window.isKeyPressed(XK_s) ||
+                      window.isKeyPressed(XK_a) || window.isKeyPressed(XK_d) ||
+                      window.isKeyPressed(XK_space) || window.isKeyPressed(XK_Control_L);
+
+        if (camera_moved) {
+            // Reset accumulation when camera moves
+            frame_count = 0;
+            std::fill(accumulated_buffer.begin(), accumulated_buffer.end(), ColorDBL(0,0,0));
+        }
 
         // Render frame
         const uint32_t num_threads = std::thread::hardware_concurrency();
@@ -214,15 +213,31 @@ int main() {
             uint32_t start_row = i * rows_per_thread;
             uint32_t end_row = (i == num_threads - 1) ? camera.getHeight() : (i + 1) * rows_per_thread;
             threads.emplace_back(renderRegion, std::ref(camera), std::ref(scene), 
-                               start_row, end_row, samples_per_frame);
+                               start_row, end_row, samples_per_frame, std::ref(frame_buffer));
         }
 
         for (auto& thread : threads) {
             thread.join();
         }
 
-        // Update display
-        window.updateScreen(camera.getImageBuffer());
+        // Accumulate frames
+        frame_count++;
+        for (size_t i = 0; i < frame_buffer.size(); ++i) {
+            accumulated_buffer[i] += frame_buffer[i];
+            
+            // Average and apply gamma correction
+            ColorDBL final_color = accumulated_buffer[i] / frame_count;
+            final_color = ColorDBL(
+                std::pow(std::clamp(final_color.r(), 0.0, 1.0), 1.0/2.2),
+                std::pow(std::clamp(final_color.g(), 0.0, 1.0), 1.0/2.2),
+                std::pow(std::clamp(final_color.b(), 0.0, 1.0), 1.0/2.2)
+            );
+            
+            frame_buffer[i] = final_color;
+        }
+
+        // Update display with accumulated result
+        window.updateScreen(frame_buffer);
 
         // Calculate frame time
         auto frame_end = std::chrono::high_resolution_clock::now();
