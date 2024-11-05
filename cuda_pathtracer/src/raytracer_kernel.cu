@@ -19,6 +19,18 @@ struct GPUIntersection {
     bool frontFace;
     float3 emission;
     bool hit;
+
+    // Add conversion constructor from Intersection_t
+    __device__ GPUIntersection& operator=(const Intersection_t& isect) {
+        point = make_float3(isect.point.x, isect.point.y, isect.point.z);
+        normal = make_float3(isect.normal.x, isect.normal.y, isect.normal.z);
+        distance = isect.distance;
+        color = make_float3(isect.color.r, isect.color.g, isect.color.b);
+        frontFace = isect.frontFace;
+        emission = make_float3(isect.emission.r, isect.emission.g, isect.emission.b);
+        hit = isect.hit;
+        return *this;
+    }
 };
 
 // Device helper functions
@@ -81,6 +93,19 @@ __device__ Intersection_t intersectPlane(const Ray_t& ray, const GPUPlane& plane
     return isect;
 }
 
+// Add these helper functions at the top of the file
+__device__ inline float3 operator*(const float3& a, float b) {
+    return make_float3(a.x * b, a.y * b, a.z * b);
+}
+
+__device__ inline float3 operator+(const float3& a, const float3& b) {
+    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+__device__ inline float3 operator*(const float3& a, const float3& b) {
+    return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
 __global__ void renderKernel(float4* output, uint32_t width, uint32_t height, uint32_t frame_count) {
     const uint32_t x = blockIdx.x * blockDim.x + threadIdx.x;
     const uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -93,7 +118,66 @@ __global__ void renderKernel(float4* output, uint32_t width, uint32_t height, ui
     curandState rand_state;
     curand_init(pixel_index + frame_count * width * height, 0, 0, &rand_state);
     
-    // Camera ray calculation
+    // Calculate UV coordinates
+    float u = (x + curand_uniform(&rand_state)) / static_cast<float>(width);
+    float v = (y + curand_uniform(&rand_state)) / static_cast<float>(height);
+    
+    // Generate ray from camera
+    float aspect = static_cast<float>(width) / static_cast<float>(height);
+    float viewport_height = 2.0f * tanf(d_camera.fov / 2.0f);
+    float viewport_width = aspect * viewport_height;
+    
+    Vec3f_t horizontal = Vec3f_t::fromFloat3(d_camera.right) * viewport_width;
+    Vec3f_t vertical = Vec3f_t::fromFloat3(d_camera.up) * viewport_height;
+    Vec3f_t lower_left_corner = Vec3f_t::fromFloat3(d_camera.origin) + 
+                               Vec3f_t::fromFloat3(d_camera.forward) - 
+                               horizontal * 0.5f - vertical * 0.5f;
+    
+    Ray_t ray;
+    ray.origin = Vec3f_t::fromFloat3(d_camera.origin);
+    ray.direction = (lower_left_corner + horizontal * u + vertical * (1.0f - v) - ray.origin).normalized();
+    
+    // Initialize color
+    Color_t pixel_color(0.0f, 0.0f, 0.0f);
+    
+    // Trace ray
+    GPUIntersection isect;
+    isect.hit = false;
+    float closest_dist = FLOAT_MAX;
+    
+    // Check sphere intersections
+    for (int i = 0; i < d_num_spheres; i++) {
+        Intersection_t sphere_isect = intersectSphere(ray, d_spheres[i]);
+        if (sphere_isect.hit && sphere_isect.distance < closest_dist) {
+            closest_dist = sphere_isect.distance;
+            isect = sphere_isect;  // This will now use our conversion operator
+        }
+    }
+    
+    // Check plane intersections
+    for (int i = 0; i < d_num_planes; i++) {
+        Intersection_t plane_isect = intersectPlane(ray, d_planes[i]);
+        if (plane_isect.hit && plane_isect.distance < closest_dist) {
+            closest_dist = plane_isect.distance;
+            isect = plane_isect;  // This will now use our conversion operator
+        }
+    }
+    
+    // Calculate color based on intersection
+    if (isect.hit) {
+        pixel_color = isect.color * 0.5f + isect.emission;
+    }
+    
+    // Accumulate samples if frame_count > 0
+    if (frame_count > 0) {
+        float4 prev_color = output[pixel_index];
+        float t = 1.0f / (frame_count + 1);
+        float3 current_color = make_float3(prev_color.x, prev_color.y, prev_color.z);
+        pixel_color = pixel_color * t + current_color * (1.0f - t);
+    }
+    
+    // Write final color
+    output[pixel_index] = make_float4(pixel_color.r, pixel_color.g, pixel_color.b, 1.0f);
 }
 
 // Add initialization function

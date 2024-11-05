@@ -35,6 +35,13 @@ public:
         return *this;
     }
 
+	__host__ __device__ Color_t& operator=(float3 f) {
+		r = f.x;
+		g = f.y;
+		b = f.z;
+		return *this;
+	}
+
     // Utility functions
     __host__ __device__ Color_t clamp() const {
         return Color_t(
@@ -56,6 +63,11 @@ public:
 // Non-member operators
 __host__ __device__ inline Color_t operator+(const Color_t& a, const Color_t& b) {
     return Color_t(a.r + b.r, a.g + b.g, a.b + b.b);
+}
+
+// add with float3
+__host__ __device__ inline Color_t operator+(const Color_t& a, const float3& b) {
+	return Color_t(a.r + b.x, a.g + b.y, a.b + b.z);
 }
 
 __host__ __device__ inline Color_t operator*(const Color_t& a, const Color_t& b) {
