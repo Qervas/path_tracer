@@ -8,14 +8,14 @@
 // Base class for all implicit objects
 class ImplicitObject_t {
 protected:
-    Color_t color_;
+    Material_t* material_;
     bool isEmissive_;
     Color_t emissionColor_;
     float emissionStrength_;
 
 public:
-    __host__ __device__ explicit ImplicitObject_t(const Color_t& color)
-        : color_(color)
+    __host__ __device__ explicit ImplicitObject_t(Material_t* material)
+        : material_(material)
         , isEmissive_(false)
         , emissionColor_()
         , emissionStrength_(0.0f)
@@ -37,7 +37,7 @@ public:
     __host__ __device__ bool isEmissive() const { return isEmissive_; }
     __host__ __device__ const Color_t& getEmissionColor() const { return emissionColor_; }
     __host__ __device__ float getEmissionStrength() const { return emissionStrength_; }
-    __host__ __device__ const Color_t& getColor() const { return color_; }
+    __host__ __device__ Material_t* getMaterial() const { return material_; }
 
     __host__ __device__ virtual Point3f_t getCenter() const {
         return Point3f_t(); 
@@ -68,8 +68,8 @@ private:
     float radiusSquared_;
 
 public:
-    __host__ __device__ Sphere_t(const Point3f_t& center, float radius, const Color_t& color)
-        : ImplicitObject_t(color)
+    __host__ __device__ Sphere_t(const Point3f_t& center, float radius, Material_t* material)
+        : ImplicitObject_t(material)
         , center_(center)
         , radius_(radius)
         , radiusSquared_(radius * radius)
@@ -103,7 +103,7 @@ public:
         hit.distance = root;
         hit.point = ray.at(root);
         hit.normal = getNormalAt(hit.point);
-        hit.color = color_;
+        hit.material = material_;
         hit.setFaceNormal(ray, hit.normal);
 
         if (isEmissive_) {
@@ -159,8 +159,8 @@ private:
     Vec3f_t normal_;
 
 public:
-    __host__ __device__ Plane_t(const Point3f_t& point, const Vec3f_t& normal, const Color_t& color)
-        : ImplicitObject_t(color)
+    __host__ __device__ Plane_t(const Point3f_t& point, const Vec3f_t& normal, Material_t* material)
+        : ImplicitObject_t(material)
         , point_(point)
         , normal_(normal.normalized())
     {}
@@ -185,7 +185,7 @@ public:
         hit.distance = t;
         hit.point = ray.at(t);
         hit.normal = normal_;
-        hit.color = color_;
+        hit.material = material_;
         hit.setFaceNormal(ray, normal_);
 
         if (isEmissive_) {

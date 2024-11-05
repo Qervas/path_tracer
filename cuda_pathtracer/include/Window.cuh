@@ -158,7 +158,7 @@ public:
         return running_;
     }
 
-    // Add a method to call the kernel
+    // method to call the kernel
     void convertToRGBA(const float4* input, uint32_t* output) {
         dim3 block(16, 16);
         dim3 grid((width_ + block.x - 1) / block.x, 

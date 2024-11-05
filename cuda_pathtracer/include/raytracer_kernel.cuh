@@ -21,15 +21,15 @@ struct GPUCamera {
 struct GPUSphere {
     float3 center;
     float radius;
-    float3 color;
-    float3 emission;
+    Material_t* material;
     bool is_emissive;
+    float3 emission;
 };
 
 struct GPUPlane {
     float3 point;
     float3 normal;
-    float3 color;
+    Material_t* material;
 };
 
 // Declare external constants

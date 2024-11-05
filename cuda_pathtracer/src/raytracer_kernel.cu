@@ -2,6 +2,11 @@
 #include "Camera.cuh"
 #include "Scene.cuh"
 #include "Error.cuh"
+#include "Material.cuh"
+#include "Intersection.cuh"
+#include "ScatterRecord.cuh"
+#include <curand_kernel.h>
+#include <math_constants.h>
 
 // Define device constants
 __constant__ GPUCamera d_camera;
@@ -20,7 +25,7 @@ struct GPUIntersection {
     float3 emission;
     bool hit;
 
-    // Add conversion constructor from Intersection_t
+    // conversion constructor from Intersection_t
     __device__ GPUIntersection& operator=(const Intersection_t& isect) {
         point = make_float3(isect.point.x, isect.point.y, isect.point.z);
         normal = make_float3(isect.normal.x, isect.normal.y, isect.normal.z);
@@ -51,19 +56,21 @@ __device__ Intersection_t intersectSphere(const Ray_t& ray, const GPUSphere& sph
     float sqrtd = sqrtf(discriminant);
     float root = (-half_b - sqrtd) / a;
     
-    if (root < 0.001f || root > 1000.0f) {
+    if (!ray.isValidDistance(root)) {
         root = (-half_b + sqrtd) / a;
-        if (root < 0.001f || root > 1000.0f) return isect;
+        if (!ray.isValidDistance(root)) return isect;
     }
     
     isect.hit = true;
     isect.distance = root;
     isect.point = ray.at(root);
     isect.normal = (isect.point - sphere_center) / sphere.radius;
-    isect.color = Color_t::fromFloat3(sphere.color);
-    isect.emission = sphere.is_emissive ? Color_t::fromFloat3(sphere.emission) : Color_t(0.0f, 0.0f, 0.0f);
-    isect.frontFace = dot(ray.direction, isect.normal) < 0;
-    if (!isect.frontFace) isect.normal = -isect.normal;
+    isect.material = sphere.material;
+    isect.setFaceNormal(ray, isect.normal);
+    
+    if (sphere.is_emissive) {
+        isect.emission = Color_t::fromFloat3(sphere.emission);
+    }
     
     return isect;
 }
@@ -81,20 +88,44 @@ __device__ Intersection_t intersectPlane(const Ray_t& ray, const GPUPlane& plane
     
     float t = dot(plane_point - ray.origin, plane_normal) / denom;
     
-    if (t < 0.001f || t > 1000.0f) return isect;
+    if (!ray.isValidDistance(t)) return isect;
     
     isect.hit = true;
     isect.distance = t;
     isect.point = ray.at(t);
     isect.normal = plane_normal;
-    isect.color = Color_t::fromFloat3(plane.color);
-    isect.emission = Color_t(0.0f, 0.0f, 0.0f);
+    isect.material = plane.material;
     isect.setFaceNormal(ray, plane_normal);
     
     return isect;
 }
 
-// Add these helper functions at the top of the file
+__device__ Intersection_t intersectScene(const Ray_t& ray) {
+    Intersection_t closest_hit;
+    closest_hit.hit = false;
+    float closest_dist = FLOAT_MAX;
+
+    // Check sphere intersections
+    for (int i = 0; i < d_num_spheres; i++) {
+        Intersection_t sphere_isect = intersectSphere(ray, d_spheres[i]);
+        if (sphere_isect.hit && sphere_isect.distance < closest_dist) {
+            closest_dist = sphere_isect.distance;
+            closest_hit = sphere_isect;
+        }
+    }
+
+    // Check plane intersections
+    for (int i = 0; i < d_num_planes; i++) {
+        Intersection_t plane_isect = intersectPlane(ray, d_planes[i]);
+        if (plane_isect.hit && plane_isect.distance < closest_dist) {
+            closest_dist = plane_isect.distance;
+            closest_hit = plane_isect;
+        }
+    }
+
+    return closest_hit;
+}
+
 __device__ inline float3 operator*(const float3& a, float b) {
     return make_float3(a.x * b, a.y * b, a.z * b);
 }
@@ -111,138 +142,112 @@ __device__ inline float length(const float3& a) {
 	return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
 }
 
-__device__ Color_t traceRay(const Ray_t& ray, curandState* rand_state, int depth = 0) {
-    if (depth >= 5) return Color_t(0.0f, 0.0f, 0.0f);
-
-    GPUIntersection isect;
-    isect.hit = false;
-    float closest_dist = FLOAT_MAX;
-
-    // Check all intersections
-    for (int i = 0; i < d_num_spheres; i++) {
-        Intersection_t sphere_isect = intersectSphere(ray, d_spheres[i]);
-        if (sphere_isect.hit && sphere_isect.distance < closest_dist) {
-            closest_dist = sphere_isect.distance;
-            isect = sphere_isect;
+__device__ Color_t traceRay(Ray_t ray, curandState* rand_state, int max_depth) {
+    Color_t final_color(0.0f);
+    Color_t throughput(1.0f);
+    
+    for (int depth = 0; depth < max_depth; depth++) {
+        Intersection_t isect = intersectScene(ray);
+        if (!isect.hit) break;  // Ray missed everything, add background color (black)
+        
+        // Get emitted light
+        final_color += throughput * isect.material->emitted(ray, isect);
+        
+        // Handle scattering
+        ScatterRecord_t srec;
+        if (!isect.material->scatter(ray, isect, srec, rand_state)) {
+            break;
+        }
+        
+        if (srec.is_specular) {
+            throughput *= srec.attenuation;
+            ray = srec.scattered_ray;
+            continue;
+        }
+        
+        // Update ray for next iteration
+        ray = srec.scattered_ray;
+        
+        // Update throughput
+        Color_t brdf = srec.attenuation * isect.material->scatteringPdf(ray, isect, srec.scattered_ray);
+        throughput *= brdf * (1.0f / srec.pdf);
+        
+        // Russian roulette termination
+        if (depth > 3) {
+            float p = fmaxf(throughput.r, fmaxf(throughput.g, throughput.b));
+            if (curand_uniform(rand_state) > p) {
+                break;
+            }
+            throughput *= 1.0f / p;
         }
     }
-
-    // Make sure plane intersections are checked
-    for (int i = 0; i < d_num_planes; i++) {
-        Intersection_t plane_isect = intersectPlane(ray, d_planes[i]);
-        if (plane_isect.hit && plane_isect.distance < closest_dist) {
-            closest_dist = plane_isect.distance;
-            isect = plane_isect;
-        }
-    }
-
-    if (!isect.hit) return Color_t(0.0f, 0.0f, 0.0f);
-
-    // If hit emissive surface, return emission
-    if (length(isect.emission) > 0.0f) {
-        return Color_t::fromFloat3(isect.emission);
-    }
-
-    // Create coordinate system around hit normal
-    Vec3f_t w = Vec3f_t::fromFloat3(isect.normal);
-    Vec3f_t a = (fabsf(w.x) > 0.9f) ? Vec3f_t(0, 1, 0) : Vec3f_t(1, 0, 0);
-    Vec3f_t v = cross(w, a).normalized();
-    Vec3f_t u = cross(v, w);
-
-    // Sample random direction in hemisphere
-    float r1 = 2.0f * M_PI * curand_uniform(rand_state);
-    float r2 = curand_uniform(rand_state);
-    float r2s = sqrtf(r2);
     
-    Vec3f_t newDir = (u * cosf(r1) * r2s + 
-                     v * sinf(r1) * r2s + 
-                     w * sqrtf(1.0f - r2)).normalized();
+    return final_color;
+}
 
-    // Create new ray for bounce
-    Ray_t bounceRay(Vec3f_t::fromFloat3(isect.point) + newDir * 0.001f, newDir);
+__device__ Ray_t generateCameraRay(float u, float v) {
+    // Get camera data from constant memory
+    const float aspect_ratio = static_cast<float>(d_camera.width) / d_camera.height;
+    const float viewport_height = 2.0f * tanf(d_camera.fov * 0.5f);
+    const float viewport_width = aspect_ratio * viewport_height;
+
+    // Calculate viewport vectors
+    Vec3f_t origin = Vec3f_t::fromFloat3(d_camera.origin);
+    Vec3f_t forward = Vec3f_t::fromFloat3(d_camera.forward);
+    Vec3f_t right = Vec3f_t::fromFloat3(d_camera.right);
+    Vec3f_t up = Vec3f_t::fromFloat3(d_camera.up);
+
+    // Calculate the point on the viewport
+    float x_offset = (2.0f * u - 1.0f) * viewport_width * 0.5f;
+    float y_offset = (2.0f * v - 1.0f) * viewport_height * 0.5f;
     
-    // Recursive call with cosine weighted contribution
-    Color_t incoming = traceRay(bounceRay, rand_state, depth + 1);
-    float cosTheta = dot(newDir, Vec3f_t::fromFloat3(isect.normal));
-    
-    return Color_t::fromFloat3(isect.color) * incoming * cosTheta * 2.0f;
+    Vec3f_t ray_direction = forward + right * x_offset + up * y_offset;
+    ray_direction = ray_direction.normalized();
+
+    return Ray_t(origin, ray_direction, Ray_t::Type::PRIMARY);
+}
+
+__device__ void initRand(curandState* rand_state, uint32_t seed) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int idy = blockIdx.y * blockDim.y + threadIdx.y;
+    int offset = idy * gridDim.x * blockDim.x + idx;
+    curand_init(seed + offset, 0, 0, rand_state);
 }
 
 __global__ void renderKernel(float4* output, uint32_t width, uint32_t height, uint32_t frame_count) {
-    const uint32_t x = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
     
     if (x >= width || y >= height) return;
     
-    const uint32_t pixel_index = y * width + x;
+    const int pixel_index = y * width + x;
     
     // Initialize random state
     curandState rand_state;
-    curand_init(pixel_index + frame_count * width * height, 0, 0, &rand_state);
+    initRand(&rand_state, frame_count * width * height + pixel_index);
     
-    // Calculate UV coordinates
-    float u = (x + curand_uniform(&rand_state)) / static_cast<float>(width);
-    float v = (y + curand_uniform(&rand_state)) / static_cast<float>(height);
+    // Calculate UV coordinates with jittering
+    const float u = (x + curand_uniform(&rand_state)) / static_cast<float>(width);
+    const float v = (y + curand_uniform(&rand_state)) / static_cast<float>(height);
     
-    // Generate ray from camera
-    float aspect = static_cast<float>(width) / static_cast<float>(height);
-    float viewport_height = 2.0f * tanf(d_camera.fov / 2.0f);
-    float viewport_width = aspect * viewport_height;
+    // Generate camera ray
+    Ray_t ray = generateCameraRay(u, v);
     
-    Vec3f_t horizontal = Vec3f_t::fromFloat3(d_camera.right) * viewport_width;
-    Vec3f_t vertical = Vec3f_t::fromFloat3(d_camera.up) * viewport_height;
-    Vec3f_t lower_left_corner = Vec3f_t::fromFloat3(d_camera.origin) + 
-                               Vec3f_t::fromFloat3(d_camera.forward) - 
-                               horizontal * 0.5f - vertical * 0.5f;
-    
-    Ray_t ray;
-    ray.origin = Vec3f_t::fromFloat3(d_camera.origin);
-    ray.direction = (lower_left_corner + horizontal * u + vertical * (1.0f - v) - ray.origin).normalized();
-    
-    // Initialize color
-    Color_t pixel_color(0.0f, 0.0f, 0.0f);
-    
-    // Trace ray
-    GPUIntersection isect;
-    isect.hit = false;
-    float closest_dist = FLOAT_MAX;
-    
-    // Check sphere intersections
-    for (int i = 0; i < d_num_spheres; i++) {
-        Intersection_t sphere_isect = intersectSphere(ray, d_spheres[i]);
-        if (sphere_isect.hit && sphere_isect.distance < closest_dist) {
-            closest_dist = sphere_isect.distance;
-            isect = sphere_isect;  // This will now use our conversion operator
-        }
-    }
-    
-    // Check plane intersections
-    for (int i = 0; i < d_num_planes; i++) {
-        Intersection_t plane_isect = intersectPlane(ray, d_planes[i]);
-        if (plane_isect.hit && plane_isect.distance < closest_dist) {
-            closest_dist = plane_isect.distance;
-            isect = plane_isect;  // This will now use our conversion operator
-        }
-    }
-    
-    // Calculate color based on intersection
-    if (isect.hit) {
-        pixel_color = isect.color * 0.5f + isect.emission;
-    }
+    // Trace ray and accumulate color
+    Color_t pixel_color = traceRay(ray, &rand_state, 50);  // Max depth of 50
     
     // Accumulate samples if frame_count > 0
     if (frame_count > 0) {
         float4 prev_color = output[pixel_index];
         float t = 1.0f / (frame_count + 1);
-        float3 current_color = make_float3(prev_color.x, prev_color.y, prev_color.z);
-        pixel_color = pixel_color * t + current_color * (1.0f - t);
+        pixel_color = pixel_color * t + Color_t(prev_color.x, prev_color.y, prev_color.z) * (1.0f - t);
     }
     
     // Write final color
     output[pixel_index] = make_float4(pixel_color.r, pixel_color.g, pixel_color.b, 1.0f);
 }
 
-// Add initialization function
+// initialization function
 void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
     // Validate scene pointer
     if (!d_scene) {
@@ -296,13 +301,14 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
             
             // Check if object is a sphere by calling isSphere()
             if (obj->isSphere()) {
+                const Sphere_t* sphere = static_cast<const Sphere_t*>(obj);
                 GPUSphere gpu_sphere;
-                gpu_sphere.center = make_float3(obj->getCenter().x, obj->getCenter().y, obj->getCenter().z);
-                gpu_sphere.radius = obj->getRadius();
-                gpu_sphere.color = make_float3(obj->getColor().r, obj->getColor().g, obj->getColor().b);
-                gpu_sphere.is_emissive = obj->isEmissive();
-                if (obj->isEmissive()) {
-                    Color_t emission = obj->getEmissionColor() * obj->getEmissionStrength();
+                gpu_sphere.center = make_float3(sphere->getCenter().x, sphere->getCenter().y, sphere->getCenter().z);
+                gpu_sphere.radius = sphere->getRadius();
+                gpu_sphere.material = sphere->getMaterial();
+                gpu_sphere.is_emissive = sphere->isEmissive();
+                if (sphere->isEmissive()) {
+                    Color_t emission = sphere->getEmissionColor() * sphere->getEmissionStrength();
                     gpu_sphere.emission = make_float3(emission.r, emission.g, emission.b);
                 } else {
                     gpu_sphere.emission = make_float3(0.0f, 0.0f, 0.0f);
@@ -311,7 +317,7 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
             }
         }
 
-        // Add plane handling
+        // plane handling
         for (uint32_t i = 0; i < h_scene.implicit_object_count; ++i) {
             const ImplicitObject_t* obj = h_implicit_objects[i];
             
@@ -320,7 +326,7 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
                 GPUPlane gpu_plane;
                 gpu_plane.point = make_float3(plane->getPoint().x, plane->getPoint().y, plane->getPoint().z);
                 gpu_plane.normal = make_float3(plane->getNormal().x, plane->getNormal().y, plane->getNormal().z);
-                gpu_plane.color = make_float3(plane->getColor().r, plane->getColor().g, plane->getColor().b);
+                gpu_plane.material = plane->getMaterial();
                 h_planes.push_back(gpu_plane);
             }
         }
@@ -349,7 +355,8 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
     }
 }
 
-// Add this function to handle kernel launch
+// this function to handle kernel launch
 extern "C" void launchRenderKernel(float4* output, uint32_t width, uint32_t height, uint32_t frame_count, dim3 grid, dim3 block) {
     renderKernel<<<grid, block>>>(output, width, height, frame_count);
 }
+

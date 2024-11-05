@@ -4,11 +4,13 @@
 #include "Camera.cuh"
 #include "Random.cuh"
 #include "raytracer_kernel.cuh"
+#include "Material.cuh"
+#include "MaterialFactory.cuh"
 #include <iostream>
 #include <chrono>
+#include <algorithm>
 #include "Error.cuh"
 
-// Add these helper functions at the top of the file
 void checkCudaCapabilities() {
     int deviceCount;
     CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
@@ -62,94 +64,70 @@ int main() {
         const float room_size = 4.0f;
         const float half_size = room_size / 2.0f;
 
-        // Initialize scene
-        Scene_t scene;
-        std::vector<ImplicitObject_t*> objects;
-        std::vector<ImplicitObject_t*> lights;
-
-        // Room walls
-        auto back_wall = new Plane_t(
-            Point3f_t(0, 0, -half_size),
-            Vec3f_t(0, 0, 1),
-            Color_t(0.9f, 0.9f, 0.9f)
-        );
-        objects.push_back(back_wall);
-
-        auto left_wall = new Plane_t(
-            Point3f_t(-half_size, 0, 0),
-            Vec3f_t(1, 0, 0),
-            Color_t(0.9f, 0.2f, 0.2f)
-        );
-        objects.push_back(left_wall);
-
-        auto right_wall = new Plane_t(
-            Point3f_t(half_size, 0, 0),
-            Vec3f_t(-1, 0, 0),
-            Color_t(0.2f, 0.9f, 0.2f)
-        );
-        objects.push_back(right_wall);
-
-        auto floor = new Plane_t(
-            Point3f_t(0, -half_size, 0),
-            Vec3f_t(0, 1, 0),
-            Color_t(0.9f, 0.9f, 0.9f)
-        );
-        objects.push_back(floor);
-
-        auto ceiling = new Plane_t(
-            Point3f_t(0, half_size, 0),
-            Vec3f_t(0, -1, 0),
-            Color_t(0.9f, 0.9f, 0.9f)
-        );
-        objects.push_back(ceiling);
-
-        // Spheres
-        auto sphere1 = new Sphere_t(
-            Point3f_t(-1.0f, -half_size + 0.8f, -half_size + 1.0f),
-            0.8f,
-            Color_t(0.95f, 0.95f, 0.95f)
-        );
-        objects.push_back(sphere1);
-
-        auto sphere2 = new Sphere_t(
-            Point3f_t(1.0f, -half_size + 0.4f, -half_size + 1.0f),
-            0.4f,
-            Color_t(0.7f, 0.3f, 0.3f)
-        );
-        objects.push_back(sphere2);
-
-        // Light
-        auto light = new Sphere_t(
-            Point3f_t(0, half_size - 0.1f, 0),
-            0.2f,
-            Color_t(1.0f, 1.0f, 1.0f)
-        );
-        light->makeEmissive(Color_t(1.0f, 1.0f, 1.0f), 100.0f);
-        objects.push_back(light);
-        lights.push_back(light);
+        // Create camera settings struct
+        Camera_t::Settings camera_settings{
+            90.0f,  // vertical FOV
+            window.getWidth() / static_cast<float>(window.getHeight()),  // aspect ratio
+            0.0f,   // aperture
+            10.0f,  // focus distance
+            window.getWidth(),
+            window.getHeight(),
+            false   // enable_dof
+        };
 
         // Initialize camera
         Camera_t camera(
-            Point3f_t(0, 0, half_size * 0.8f),
-            Point3f_t(0, 0, -1),
-            Vec3f_t(0, 1, 0),
-            Camera_t::Settings{
-                90.0f,                    // FOV
-                window.getWidth() / static_cast<float>(window.getHeight()), // aspect ratio
-                0.0f,                     // aperture
-                10.0f,                    // focus distance
-                window.getWidth(),        // width
-                window.getHeight(),       // height
-                false                     // DOF
-            }
+            Point3f_t(0, 0, half_size * 0.8f),  // position
+            Point3f_t(0, 0, -1),                // look at
+            Vec3f_t(0, 1, 0),                   // up vector
+            camera_settings
         );
 
-        // Initialize scene manager
+        // Create materials on device
+        Material_t *d_white_diffuse = nullptr, *d_red_diffuse = nullptr, 
+                  *d_green_diffuse = nullptr, *d_light = nullptr, 
+                  *d_glass = nullptr, *d_metal = nullptr;
+        
+        MaterialFactory::createMaterialsOnDevice(
+            &d_white_diffuse, &d_red_diffuse, &d_green_diffuse,
+            &d_light, &d_glass, &d_metal
+        );
+
+        // Create scene objects
         SceneManager scene_manager;
-        scene_manager.initializeScene(objects, std::vector<Polygon_t*>(), lights);
+
+        // Add walls
+        scene_manager.addObject(new Plane_t(Point3f_t(0.0f, -2.0f, 0.0f), 
+            Vec3f_t(0.0f, 1.0f, 0.0f), d_white_diffuse));
+        scene_manager.addObject(new Plane_t(Point3f_t(0.0f, 2.0f, 0.0f), 
+            Vec3f_t(0.0f, -1.0f, 0.0f), d_white_diffuse));
+        scene_manager.addObject(new Plane_t(Point3f_t(0.0f, 0.0f, -2.0f), 
+            Vec3f_t(0.0f, 0.0f, 1.0f), d_white_diffuse));
+        scene_manager.addObject(new Plane_t(Point3f_t(-2.0f, 0.0f, 0.0f), 
+            Vec3f_t(1.0f, 0.0f, 0.0f), d_red_diffuse));
+        scene_manager.addObject(new Plane_t(Point3f_t(2.0f, 0.0f, 0.0f), 
+            Vec3f_t(-1.0f, 0.0f, 0.0f), d_green_diffuse));
+
+        // Add spheres
+        auto glass_sphere = new Sphere_t(Point3f_t(-0.5f, -1.0f, -1.0f), 
+            0.5f, d_glass);
+        auto metal_sphere = new Sphere_t(Point3f_t(0.5f, -1.0f, 0.0f), 
+            0.5f, d_metal);
+        
+        scene_manager.addObject(glass_sphere);
+        scene_manager.addObject(metal_sphere);
+
+        // Add light
+        auto light_sphere = new Sphere_t(Point3f_t(0.0f, 1.9f, 0.0f), 
+            0.5f, d_light);
+        light_sphere->makeEmissive(Color_t(1.0f), 15.0f);
+        scene_manager.addObject(light_sphere);
+
+        // Upload scene to GPU
+        scene_manager.uploadToGPU();
 
         // Initialize GPU data
-     	initializeGPUData(camera, scene_manager.getDeviceScene());
+        initializeGPUData(camera, scene_manager.getDeviceScene());
 
         // Setup CUDA grid and blocks
         dim3 block(16, 16);
@@ -235,18 +213,16 @@ int main() {
 
         // Cleanup
         CUDA_CHECK(cudaFree(d_output));
-        for (auto obj : objects) delete obj;
 
-    } catch (const char* error) {
-        std::cerr << "Error: " << error << std::endl;
-        return 1;
+        // Cleanup materials before exit
+        MaterialFactory::cleanup(
+            d_white_diffuse, d_red_diffuse, d_green_diffuse,
+            d_light, d_glass, d_metal
+        );
+
     } catch (const std::exception& e) {
-        std::cerr << "Standard exception: " << e.what() << std::endl;
-        return 1;
-    } catch (...) {
-        std::cerr << "Unknown error occurred" << std::endl;
+        std::cerr << e.what() << std::endl;
         return 1;
     }
-
     return 0;
 } 

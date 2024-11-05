@@ -10,6 +10,7 @@ public:
 
     // Constructors
     __host__ __device__ Color_t() : r(0), g(0), b(0) {}
+	__host__ __device__ Color_t(float t) : r(t), g(t), b(t) {}
     __host__ __device__ Color_t(float r_, float g_, float b_) : r(r_), g(g_), b(b_) {}
     __host__ __device__ Color_t(const Vec3f_t& v) : r(v.x), g(v.y), b(v.z) {}
 
