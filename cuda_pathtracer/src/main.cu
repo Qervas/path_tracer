@@ -6,22 +6,57 @@
 #include "raytracer_kernel.cuh"
 #include <iostream>
 #include <chrono>
+#include "Error.cuh"
 
-// Error checking macro
-#define CUDA_CHECK(call) \
-    do { \
-        cudaError_t error = call; \
-        if (error != cudaSuccess) { \
-            std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__ << ": " \
-                      << cudaGetErrorString(error) << std::endl; \
-            exit(1); \
-        } \
-    } while(0)
+// Add these helper functions at the top of the file
+void checkCudaCapabilities() {
+    int deviceCount;
+    CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
+    if (deviceCount == 0) {
+        throw "No CUDA capable devices found";
+    }
+
+    cudaDeviceProp prop;
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+    
+    std::cout << "Using GPU: " << prop.name << std::endl;
+    std::cout << "Compute capability: " << prop.major << "." << prop.minor << std::endl;
+}
+
+void initializeCuda() {
+    // Initialize CUDA runtime
+    CUDA_CHECK(cudaSetDevice(0));
+    
+    // Create context
+    cudaFree(0);
+    
+    // Check last error
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw cudaGetErrorString(error);
+    }
+}
 
 int main() {
     try {
+        // Initialize CUDA with proper error checking
+        std::cout << "Initializing CUDA..." << std::endl;
+        checkCudaCapabilities();
+        initializeCuda();
+        
         // Create window
+        std::cout << "Creating window..." << std::endl;
         Window_t window(1280, 720, "CUDA Ray Tracer");
+
+        // Allocate CUDA memory with error checking
+        std::cout << "Allocating GPU memory..." << std::endl;
+        float4* d_output = nullptr;
+        size_t required_memory = window.getWidth() * window.getHeight() * sizeof(float4);
+        CUDA_CHECK(cudaMalloc(&d_output, required_memory));
+        
+        if (d_output == nullptr) {
+            throw "Failed to allocate CUDA memory";
+        }
 
         // Cornell Box dimensions
         const float room_size = 4.0f;
@@ -109,16 +144,12 @@ int main() {
             }
         );
 
-        // Initialize CUDA resources
-        float4* d_output;
-        CUDA_CHECK(cudaMalloc(&d_output, window.getWidth() * window.getHeight() * sizeof(float4)));
-
         // Initialize scene manager
         SceneManager scene_manager;
         scene_manager.initializeScene(objects, std::vector<Polygon_t*>(), lights);
 
         // Initialize GPU data
-        initializeGPUData(camera, scene_manager.getDeviceScene());
+     	initializeGPUData(camera, scene_manager.getDeviceScene());
 
         // Setup CUDA grid and blocks
         dim3 block(16, 16);
@@ -208,6 +239,12 @@ int main() {
 
     } catch (const char* error) {
         std::cerr << "Error: " << error << std::endl;
+        return 1;
+    } catch (const std::exception& e) {
+        std::cerr << "Standard exception: " << e.what() << std::endl;
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown error occurred" << std::endl;
         return 1;
     }
 

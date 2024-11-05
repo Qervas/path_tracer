@@ -8,6 +8,9 @@
 #include <cstdint>
 #include "Vec3.cuh"
 #include "Color.cuh"
+#include "Error.cuh"
+
+
 
 // Move the kernel function outside the class
 __global__ void convertToRGBAKernel(const float4* input, uint32_t* output, uint32_t width, uint32_t height) {
@@ -67,9 +70,17 @@ public:
         XStoreName(display_, window_, title);
         gc_ = XCreateGC(display_, window_, 0, nullptr);
 
-        // Allocate buffers
+        // Allocate buffers with error checking
         h_buffer_ = new uint32_t[width_ * height_];
-        cudaMalloc(&d_buffer_, width_ * height_ * sizeof(uint32_t));
+        if (!h_buffer_) {
+            throw "Failed to allocate host memory";
+        }
+
+        CUDA_CHECK(cudaMalloc(&d_buffer_, width_ * height_ * sizeof(uint32_t)));
+        if (!d_buffer_) {
+            delete[] h_buffer_;
+            throw "Failed to allocate device memory";
+        }
 
         image_ = XCreateImage(display_, DefaultVisual(display_, screen_),
             24, ZPixmap, 0, (char*)h_buffer_,

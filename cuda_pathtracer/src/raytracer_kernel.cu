@@ -1,6 +1,7 @@
 #include "raytracer_kernel.cuh"
 #include "Camera.cuh"
 #include "Scene.cuh"
+#include "Error.cuh"
 
 // Define device constants
 __constant__ GPUCamera d_camera;
@@ -96,7 +97,16 @@ __global__ void renderKernel(float4* output, uint32_t width, uint32_t height, ui
 }
 
 // Add initialization function
-void initializeGPUData(const Camera_t& camera, const Scene_t* scene) {
+void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
+    // Validate scene pointer
+    if (!d_scene) {
+        throw std::runtime_error("Scene pointer is null in initializeGPUData");
+    }
+
+    // Copy scene structure from device to host
+    Scene_t h_scene;
+    CUDA_CHECK(cudaMemcpy(&h_scene, d_scene, sizeof(Scene_t), cudaMemcpyDeviceToHost));
+
     // Setup camera data
     GPUCamera h_camera;
     h_camera.origin = make_float3(camera.getPosition().x, camera.getPosition().y, camera.getPosition().z);
@@ -114,36 +124,66 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* scene) {
     std::vector<GPUSphere> h_spheres;
     std::vector<GPUPlane> h_planes;
 
-    // Convert implicit objects to GPU format
-    for (uint32_t i = 0; i < scene->implicit_object_count; ++i) {
-        const ImplicitObject_t* obj = scene->d_implicit_objects[i];
+    // Validate implicit object count and pointer
+    if (h_scene.implicit_object_count <= 0 || !h_scene.d_implicit_objects) {
+        // If there are no objects, just set the counts to 0 and return
+        int num_spheres = 0;
+        int num_planes = 0;
+        cudaMemcpyToSymbol(d_num_spheres, &num_spheres, sizeof(int));
+        cudaMemcpyToSymbol(d_num_planes, &num_planes, sizeof(int));
+        return;
+    }
+
+    // Create host array of implicit objects
+    ImplicitObject_t** h_implicit_objects = nullptr;
+    try {
+        h_implicit_objects = new ImplicitObject_t*[h_scene.implicit_object_count];
         
-        // Check if object is a sphere by calling isSphere()
-        if (obj->isSphere()) {
-            GPUSphere gpu_sphere;
-            gpu_sphere.center = make_float3(obj->getCenter().x, obj->getCenter().y, obj->getCenter().z);
-            gpu_sphere.radius = obj->getRadius();
-            gpu_sphere.color = make_float3(obj->getColor().r, obj->getColor().g, obj->getColor().b);
-            gpu_sphere.is_emissive = obj->isEmissive();
-            if (obj->isEmissive()) {
-                Color_t emission = obj->getEmissionColor() * obj->getEmissionStrength();
-                gpu_sphere.emission = make_float3(emission.r, emission.g, emission.b);
-            } else {
-                gpu_sphere.emission = make_float3(0.0f, 0.0f, 0.0f);
+        // Copy device pointers to host
+        CUDA_CHECK(cudaMemcpy(h_implicit_objects, h_scene.d_implicit_objects, 
+                             h_scene.implicit_object_count * sizeof(ImplicitObject_t*), 
+                             cudaMemcpyDeviceToHost));
+
+        // Convert implicit objects to GPU format
+        for (uint32_t i = 0; i < h_scene.implicit_object_count; ++i) {
+            const ImplicitObject_t* obj = h_implicit_objects[i];
+            
+            // Check if object is a sphere by calling isSphere()
+            if (obj->isSphere()) {
+                GPUSphere gpu_sphere;
+                gpu_sphere.center = make_float3(obj->getCenter().x, obj->getCenter().y, obj->getCenter().z);
+                gpu_sphere.radius = obj->getRadius();
+                gpu_sphere.color = make_float3(obj->getColor().r, obj->getColor().g, obj->getColor().b);
+                gpu_sphere.is_emissive = obj->isEmissive();
+                if (obj->isEmissive()) {
+                    Color_t emission = obj->getEmissionColor() * obj->getEmissionStrength();
+                    gpu_sphere.emission = make_float3(emission.r, emission.g, emission.b);
+                } else {
+                    gpu_sphere.emission = make_float3(0.0f, 0.0f, 0.0f);
+                }
+                h_spheres.push_back(gpu_sphere);
             }
-            h_spheres.push_back(gpu_sphere);
         }
-    }
 
-    // Copy scene data to GPU
-    int num_spheres = static_cast<int>(h_spheres.size());
-    cudaMemcpyToSymbol(d_num_spheres, &num_spheres, sizeof(int));
-    if (num_spheres > 0) {
-        cudaMemcpyToSymbol(d_spheres, h_spheres.data(), h_spheres.size() * sizeof(GPUSphere));
-    }
+        // Cleanup host array
+        delete[] h_implicit_objects;
 
-    int num_planes = 0;  // We'll add plane support later if needed
-    cudaMemcpyToSymbol(d_num_planes, &num_planes, sizeof(int));
+        // Copy scene data to GPU
+        int num_spheres = static_cast<int>(h_spheres.size());
+        cudaMemcpyToSymbol(d_num_spheres, &num_spheres, sizeof(int));
+        if (num_spheres > 0) {
+            cudaMemcpyToSymbol(d_spheres, h_spheres.data(), h_spheres.size() * sizeof(GPUSphere));
+        }
+
+        int num_planes = 0;  // We'll add plane support later if needed
+        cudaMemcpyToSymbol(d_num_planes, &num_planes, sizeof(int));
+
+    } catch (const std::exception& e) {
+        if (h_implicit_objects) {
+            delete[] h_implicit_objects;
+        }
+        throw;
+    }
 }
 
 // Add this function to handle kernel launch
