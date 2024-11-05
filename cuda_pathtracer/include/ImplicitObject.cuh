@@ -39,22 +39,24 @@ public:
     __host__ __device__ float getEmissionStrength() const { return emissionStrength_; }
     __host__ __device__ const Color_t& getColor() const { return color_; }
 
-    // Add virtual methods for light sampling
     __host__ __device__ virtual Point3f_t getCenter() const {
-        return Point3f_t(); // Default implementation
+        return Point3f_t(); 
     }
 
     __host__ __device__ virtual float getRadius() const {
-        return 0.0f; // Default implementation
+        return 0.0f; 
     }
+
+	__host__ __device__ virtual bool isPlane() const {
+		return false;
+	}
 
     __host__ __device__ virtual bool isSphere() const {
-        return false; // Default implementation
+        return false; 
     }
 
-    // Add a method to sample points on the surface
     __host__ __device__ virtual Point3f_t sampleSurface(float u, float v) const {
-        return Point3f_t(); // Default implementation
+        return Point3f_t(); 
     }
 };
 
@@ -199,4 +201,5 @@ public:
 
     __host__ __device__ const Point3f_t& getPoint() const { return point_; }
     __host__ __device__ const Vec3f_t& getNormal() const { return normal_; }
+    __host__ __device__ bool isPlane() const override { return true; }
 }; 

@@ -76,9 +76,11 @@ __device__ Intersection_t intersectPlane(const Ray_t& ray, const GPUPlane& plane
     Vec3f_t plane_point = Vec3f_t::fromFloat3(plane.point);
     
     float denom = dot(plane_normal, ray.direction);
-    if (fabsf(denom) < 1e-8f) return isect;
+    
+    if (fabsf(denom) < 1e-6f) return isect;
     
     float t = dot(plane_point - ray.origin, plane_normal) / denom;
+    
     if (t < 0.001f || t > 1000.0f) return isect;
     
     isect.hit = true;
@@ -87,8 +89,7 @@ __device__ Intersection_t intersectPlane(const Ray_t& ray, const GPUPlane& plane
     isect.normal = plane_normal;
     isect.color = Color_t::fromFloat3(plane.color);
     isect.emission = Color_t(0.0f, 0.0f, 0.0f);
-    isect.frontFace = dot(ray.direction, plane_normal) < 0;
-    if (!isect.frontFace) isect.normal = -plane_normal;
+    isect.setFaceNormal(ray, plane_normal);
     
     return isect;
 }
@@ -104,6 +105,67 @@ __device__ inline float3 operator+(const float3& a, const float3& b) {
 
 __device__ inline float3 operator*(const float3& a, const float3& b) {
     return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
+__device__ inline float length(const float3& a) {
+	return sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
+}
+
+__device__ Color_t traceRay(const Ray_t& ray, curandState* rand_state, int depth = 0) {
+    if (depth >= 5) return Color_t(0.0f, 0.0f, 0.0f);
+
+    GPUIntersection isect;
+    isect.hit = false;
+    float closest_dist = FLOAT_MAX;
+
+    // Check all intersections
+    for (int i = 0; i < d_num_spheres; i++) {
+        Intersection_t sphere_isect = intersectSphere(ray, d_spheres[i]);
+        if (sphere_isect.hit && sphere_isect.distance < closest_dist) {
+            closest_dist = sphere_isect.distance;
+            isect = sphere_isect;
+        }
+    }
+
+    // Make sure plane intersections are checked
+    for (int i = 0; i < d_num_planes; i++) {
+        Intersection_t plane_isect = intersectPlane(ray, d_planes[i]);
+        if (plane_isect.hit && plane_isect.distance < closest_dist) {
+            closest_dist = plane_isect.distance;
+            isect = plane_isect;
+        }
+    }
+
+    if (!isect.hit) return Color_t(0.0f, 0.0f, 0.0f);
+
+    // If hit emissive surface, return emission
+    if (length(isect.emission) > 0.0f) {
+        return Color_t::fromFloat3(isect.emission);
+    }
+
+    // Create coordinate system around hit normal
+    Vec3f_t w = Vec3f_t::fromFloat3(isect.normal);
+    Vec3f_t a = (fabsf(w.x) > 0.9f) ? Vec3f_t(0, 1, 0) : Vec3f_t(1, 0, 0);
+    Vec3f_t v = cross(w, a).normalized();
+    Vec3f_t u = cross(v, w);
+
+    // Sample random direction in hemisphere
+    float r1 = 2.0f * M_PI * curand_uniform(rand_state);
+    float r2 = curand_uniform(rand_state);
+    float r2s = sqrtf(r2);
+    
+    Vec3f_t newDir = (u * cosf(r1) * r2s + 
+                     v * sinf(r1) * r2s + 
+                     w * sqrtf(1.0f - r2)).normalized();
+
+    // Create new ray for bounce
+    Ray_t bounceRay(Vec3f_t::fromFloat3(isect.point) + newDir * 0.001f, newDir);
+    
+    // Recursive call with cosine weighted contribution
+    Color_t incoming = traceRay(bounceRay, rand_state, depth + 1);
+    float cosTheta = dot(newDir, Vec3f_t::fromFloat3(isect.normal));
+    
+    return Color_t::fromFloat3(isect.color) * incoming * cosTheta * 2.0f;
 }
 
 __global__ void renderKernel(float4* output, uint32_t width, uint32_t height, uint32_t frame_count) {
@@ -249,6 +311,20 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
             }
         }
 
+        // Add plane handling
+        for (uint32_t i = 0; i < h_scene.implicit_object_count; ++i) {
+            const ImplicitObject_t* obj = h_implicit_objects[i];
+            
+            if (obj->isPlane()) {
+                const Plane_t* plane = static_cast<const Plane_t*>(obj);
+                GPUPlane gpu_plane;
+                gpu_plane.point = make_float3(plane->getPoint().x, plane->getPoint().y, plane->getPoint().z);
+                gpu_plane.normal = make_float3(plane->getNormal().x, plane->getNormal().y, plane->getNormal().z);
+                gpu_plane.color = make_float3(plane->getColor().r, plane->getColor().g, plane->getColor().b);
+                h_planes.push_back(gpu_plane);
+            }
+        }
+
         // Cleanup host array
         delete[] h_implicit_objects;
 
@@ -259,8 +335,11 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
             cudaMemcpyToSymbol(d_spheres, h_spheres.data(), h_spheres.size() * sizeof(GPUSphere));
         }
 
-        int num_planes = 0;  // We'll add plane support later if needed
+        int num_planes = static_cast<int>(h_planes.size());
         cudaMemcpyToSymbol(d_num_planes, &num_planes, sizeof(int));
+        if (num_planes > 0) {
+            cudaMemcpyToSymbol(d_planes, h_planes.data(), h_planes.size() * sizeof(GPUPlane));
+        }
 
     } catch (const std::exception& e) {
         if (h_implicit_objects) {
@@ -273,4 +352,4 @@ void initializeGPUData(const Camera_t& camera, const Scene_t* d_scene) {
 // Add this function to handle kernel launch
 extern "C" void launchRenderKernel(float4* output, uint32_t width, uint32_t height, uint32_t frame_count, dim3 grid, dim3 block) {
     renderKernel<<<grid, block>>>(output, width, height, frame_count);
-} 
+}
