@@ -3,6 +3,7 @@
 #include "Vec3.cuh"
 #include "Color.cuh"
 #include "Ray.cuh"
+#include "ForwardDeclarations.cuh"
 
 struct Intersection_t {
     Point3f_t point;      // Intersection point
@@ -12,8 +13,8 @@ struct Intersection_t {
     bool frontFace;       // Whether the intersection is on the front face
     Color_t emission;       // Emission color (for emissive objects)
     bool hit;             // Whether there was an intersection
+    Material_t* material;  // Material at intersection
 
-    // Constructor
     __host__ __device__ Intersection_t()
         : point()
         , normal()
@@ -22,21 +23,15 @@ struct Intersection_t {
         , frontFace(false)
         , emission()
         , hit(false)
+        , material(nullptr)
     {}
 
-    // Set the normal vector, ensuring correct orientation
     __host__ __device__ void setFaceNormal(const Ray_t& ray, const Vec3f_t& outwardNormal) {
         frontFace = dot(ray.direction, outwardNormal) < 0;
         normal = frontFace ? outwardNormal : -outwardNormal;
     }
 
-    // Utility function to create a miss intersection
     __host__ __device__ static Intersection_t miss() {
         return Intersection_t();
-    }
-
-    // Utility function to check if this is closer than another intersection
-    __host__ __device__ bool isCloser(const Intersection_t& other) const {
-        return distance < other.distance;
     }
 }; 

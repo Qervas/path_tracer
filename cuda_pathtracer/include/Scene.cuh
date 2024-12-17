@@ -5,6 +5,7 @@
 #include "Polygon.cuh"
 #include "Ray.cuh"
 #include "Random.cuh"
+#include <vector>
 
 // Define float max constant
 constexpr float FLOAT_MAX = 3.402823466e+38f;
@@ -42,6 +43,11 @@ struct Scene_t {
     Color_t ambient_light;
     BoundingBox_t bounds;
 
+    // host-side vectors to store objects before GPU transfer
+    std::vector<ImplicitObject_t*> h_implicit_objects;
+    std::vector<Polygon_t*> h_polygons;
+    std::vector<ImplicitObject_t*> h_lights;
+
     // Host methods for scene setup
     __host__ Scene_t()
         : d_implicit_objects(nullptr)
@@ -74,9 +80,70 @@ struct Scene_t {
     }
 
     __host__ void cleanup() {
+        // Free device memory
         if (d_implicit_objects) cudaFree(d_implicit_objects);
         if (d_polygons) cudaFree(d_polygons);
         if (d_lights) cudaFree(d_lights);
+
+        // Clear host vectors
+        h_implicit_objects.clear();
+        h_polygons.clear();
+        h_lights.clear();
+
+        // Reset counts
+        implicit_object_count = 0;
+        polygon_count = 0;
+        light_count = 0;
+    }
+
+    __host__ ~Scene_t() {
+        cleanup();
+    }
+
+    __host__ const std::vector<ImplicitObject_t*>& getHostObjects() const {
+        return h_implicit_objects;
+    }
+
+    __host__ void addObject(ImplicitObject_t* object) {
+        if (object == nullptr) return;
+        
+        // Store in appropriate vector
+        if (object->isEmissive()) {
+            h_lights.push_back(object);
+        }
+        h_implicit_objects.push_back(object);
+    }
+
+    __host__ void addPolygon(Polygon_t* polygon) {
+        if (polygon == nullptr) return;
+        h_polygons.push_back(polygon);
+    }
+
+    // Method to upload scene to GPU
+    __host__ void uploadToGPU() {
+        // Allocate device memory
+        allocateDeviceMemory(
+            h_implicit_objects.size(),
+            h_polygons.size(),
+            h_lights.size()
+        );
+
+        // Copy objects to device
+        if (!h_implicit_objects.empty()) {
+            cudaMemcpy(d_implicit_objects, h_implicit_objects.data(),
+                      h_implicit_objects.size() * sizeof(ImplicitObject_t*),
+                      cudaMemcpyHostToDevice);
+        }
+        if (!h_polygons.empty()) {
+            cudaMemcpy(d_polygons, h_polygons.data(),
+                      h_polygons.size() * sizeof(Polygon_t*),
+                      cudaMemcpyHostToDevice);
+        }
+        if (!h_lights.empty()) {
+            cudaMemcpy(d_lights, h_lights.data(),
+                      h_lights.size() * sizeof(ImplicitObject_t*),
+                      cudaMemcpyHostToDevice);
+        }
     }
 
     // Device methods for intersection and sampling
@@ -185,39 +252,28 @@ public:
 
     __host__ ~SceneManager() {
         if (d_scene) {
+            // Clean up host objects
+            for (auto obj : h_scene.getHostObjects()) {
+                delete obj;
+            }
+            
+            // Clean up scene
             h_scene.cleanup();
             cudaFree(d_scene);
         }
     }
 
-    __host__ void initializeScene(
-        const std::vector<ImplicitObject_t*>& implicit_objects,
-        const std::vector<Polygon_t*>& polygons,
-        const std::vector<ImplicitObject_t*>& lights)
-    {
-        // Allocate host-side arrays
-        h_scene.allocateDeviceMemory(
-            implicit_objects.size(),
-            polygons.size(),
-            lights.size()
-        );
+    __host__ void addObject(ImplicitObject_t* object) {
+        h_scene.addObject(object);
+    }
 
-        // Copy objects to device
-        if (!implicit_objects.empty()) {
-            cudaMemcpy(h_scene.d_implicit_objects, implicit_objects.data(),
-                      implicit_objects.size() * sizeof(ImplicitObject_t*),
-                      cudaMemcpyHostToDevice);
-        }
-        if (!polygons.empty()) {
-            cudaMemcpy(h_scene.d_polygons, polygons.data(),
-                      polygons.size() * sizeof(Polygon_t*),
-                      cudaMemcpyHostToDevice);
-        }
-        if (!lights.empty()) {
-            cudaMemcpy(h_scene.d_lights, lights.data(),
-                      lights.size() * sizeof(ImplicitObject_t*),
-                      cudaMemcpyHostToDevice);
-        }
+    __host__ void addPolygon(Polygon_t* polygon) {
+        h_scene.addPolygon(polygon);
+    }
+
+    __host__ void uploadToGPU() {
+        // Upload scene data to GPU
+        h_scene.uploadToGPU();
 
         // Copy scene structure to device
         cudaMalloc(&d_scene, sizeof(Scene_t));
@@ -225,4 +281,5 @@ public:
     }
 
     __host__ Scene_t* getDeviceScene() const { return d_scene; }
+    __host__ const Scene_t& getHostScene() const { return h_scene; }
 }; 

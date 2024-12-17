@@ -8,6 +8,9 @@
 #include <cstdint>
 #include "Vec3.cuh"
 #include "Color.cuh"
+#include "Error.cuh"
+
+
 
 // Move the kernel function outside the class
 __global__ void convertToRGBAKernel(const float4* input, uint32_t* output, uint32_t width, uint32_t height) {
@@ -67,9 +70,17 @@ public:
         XStoreName(display_, window_, title);
         gc_ = XCreateGC(display_, window_, 0, nullptr);
 
-        // Allocate buffers
+        // Allocate buffers with error checking
         h_buffer_ = new uint32_t[width_ * height_];
-        cudaMalloc(&d_buffer_, width_ * height_ * sizeof(uint32_t));
+        if (!h_buffer_) {
+            throw "Failed to allocate host memory";
+        }
+
+        CUDA_CHECK(cudaMalloc(&d_buffer_, width_ * height_ * sizeof(uint32_t)));
+        if (!d_buffer_) {
+            delete[] h_buffer_;
+            throw "Failed to allocate device memory";
+        }
 
         image_ = XCreateImage(display_, DefaultVisual(display_, screen_),
             24, ZPixmap, 0, (char*)h_buffer_,
@@ -115,9 +126,8 @@ public:
         XFlush(display_);
     }
 
-    __host__ bool processEvents(float& mouse_dx, float& mouse_dy) {
+     __host__ bool processEvents() {
         XEvent event;
-        mouse_dx = mouse_dy = 0;
 
         while (XPending(display_)) {
             XNextEvent(display_, &event);
@@ -125,21 +135,6 @@ public:
                 case KeyPress: {
                     KeySym key = XkbKeycodeToKeysym(display_, event.xkey.keycode, 0, 0);
                     if (key == XK_Escape) running_ = false;
-                    if (key == XK_Tab) toggleMouseCapture();
-                    if (key < 256) key_states_[key] = true;
-                    break;
-                }
-                case KeyRelease: {
-                    KeySym key = XkbKeycodeToKeysym(display_, event.xkey.keycode, 0, 0);
-                    if (key < 256) key_states_[key] = false;
-                    break;
-                }
-                case MotionNotify: {
-                    if (mouse_captured_) {
-                        mouse_dx = static_cast<float>(event.xmotion.x - center_x_);
-                        mouse_dy = static_cast<float>(event.xmotion.y - center_y_);
-                        XWarpPointer(display_, None, window_, 0, 0, 0, 0, center_x_, center_y_);
-                    }
                     break;
                 }
             }
@@ -147,7 +142,8 @@ public:
         return running_;
     }
 
-    // Add a method to call the kernel
+
+    // method to call the kernel
     void convertToRGBA(const float4* input, uint32_t* output) {
         dim3 block(16, 16);
         dim3 grid((width_ + block.x - 1) / block.x, 

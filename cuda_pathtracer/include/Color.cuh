@@ -10,6 +10,7 @@ public:
 
     // Constructors
     __host__ __device__ Color_t() : r(0), g(0), b(0) {}
+	__host__ __device__ Color_t(float t) : r(t), g(t), b(t) {}
     __host__ __device__ Color_t(float r_, float g_, float b_) : r(r_), g(g_), b(b_) {}
     __host__ __device__ Color_t(const Vec3f_t& v) : r(v.x), g(v.y), b(v.z) {}
 
@@ -35,6 +36,13 @@ public:
         return *this;
     }
 
+	__host__ __device__ Color_t& operator=(float3 f) {
+		r = f.x;
+		g = f.y;
+		b = f.z;
+		return *this;
+	}
+
     // Utility functions
     __host__ __device__ Color_t clamp() const {
         return Color_t(
@@ -56,6 +64,11 @@ public:
 // Non-member operators
 __host__ __device__ inline Color_t operator+(const Color_t& a, const Color_t& b) {
     return Color_t(a.r + b.r, a.g + b.g, a.b + b.b);
+}
+
+// add with float3
+__host__ __device__ inline Color_t operator+(const Color_t& a, const float3& b) {
+	return Color_t(a.r + b.x, a.g + b.y, a.b + b.z);
 }
 
 __host__ __device__ inline Color_t operator*(const Color_t& a, const Color_t& b) {
