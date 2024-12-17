@@ -45,7 +45,8 @@ public:
         Material_t** d_light,
         Material_t** d_glass,
         Material_t** d_metal,
-		Material_t** d_glossy
+		Material_t** d_glossy,
+		Material_t** d_mirror
     ) {
         // Allocate device memory for materials
         CUDA_CHECK(cudaMalloc(d_white_diffuse, sizeof(Lambertian_t)));
@@ -55,6 +56,7 @@ public:
         CUDA_CHECK(cudaMalloc(d_glass, sizeof(Dielectric_t)));
         CUDA_CHECK(cudaMalloc(d_metal, sizeof(Metal_t)));
 	    CUDA_CHECK(cudaMalloc(d_glossy, sizeof(Glossy_t)));
+        CUDA_CHECK(cudaMalloc(d_mirror, sizeof(Metal_t)));
 
 
 
@@ -66,6 +68,7 @@ public:
         createDielectricKernel<<<1,1>>>(*d_glass, 1.5f);
         createMetalKernel<<<1,1>>>(*d_metal, Color_t(0.95f), 0.0f);
 	    createGlossyKernel<<<1,1>>>(*d_glossy, Color_t(0.7f, 0.7f, 0.7f), 0.2f, 0.8f);
+		createMetalKernel<<<1,1>>>(*d_mirror, Color_t(0.98f, 0.98f, 0.98f), 0.0f);
 
 
         CUDA_CHECK(cudaDeviceSynchronize());
@@ -78,7 +81,8 @@ public:
         Material_t* d_light,
         Material_t* d_glass,
         Material_t* d_metal,
-        Material_t* d_glossy
+        Material_t* d_glossy,
+        Material_t* d_mirror
     ) {
         if (d_white_diffuse) CUDA_CHECK(cudaFree(d_white_diffuse));
         if (d_red_diffuse) CUDA_CHECK(cudaFree(d_red_diffuse));

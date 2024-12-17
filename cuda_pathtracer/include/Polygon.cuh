@@ -13,9 +13,9 @@ protected:
     bool normalsDirty_;  // Flag for lazy normal computation
 
 public:
-    __host__ __device__ explicit Polygon_t(const Color_t& color) 
+    __host__ __device__ explicit Polygon_t(const Color_t& color)
         : color_(color), normalsDirty_(true) {}
-    
+
     __host__ __device__ virtual ~Polygon_t() = default;
 
     // Pure virtual methods
@@ -39,17 +39,18 @@ protected:
 };
 
 // Triangle polygon implementation
-class Triangle_t final : public Polygon_t {
+class Triangle_t final : public ImplicitObject_t {
 private:
     Point3f_t vertices_[3];  // Triangle vertices
+    Vec3f_t normal_;
 
 public:
-    __host__ __device__ Triangle_t(const Point3f_t& v0, const Point3f_t& v1, const Point3f_t& v2, const Color_t& color)
-        : Polygon_t(color), vertices_{v0, v1, v2} {
-        computeNormal();
-    }
+__host__ __device__ Triangle_t(const Point3f_t& v0, const Point3f_t& v1, const Point3f_t& v2, Material_t* material)
+    : ImplicitObject_t(material), vertices_{v0, v1, v2}{
+    computeNormal();
+}
 
-    __host__ __device__ void computeNormal() override {
+    __host__ __device__ void computeNormal() {
         Vec3f_t edge1 = vertices_[1] - vertices_[0];
         Vec3f_t edge2 = vertices_[2] - vertices_[0];
         normal_ = cross(edge1, edge2).normalized();
@@ -90,15 +91,24 @@ public:
         hit.hit = true;
         hit.distance = t;
         hit.point = ray.at(t);
-        hit.color = color_;
+        hit.material = material_;  // Add this line to set the material
         hit.setFaceNormal(ray, normal_);
+
+        if (isEmissive_) {
+            hit.emission = emissionColor_ * emissionStrength_;
+        }
 
         return hit;
     }
 
-    __host__ __device__ const Point3f_t* getVertices() const { 
-        return vertices_; 
+    __host__ __device__ Vec3f_t getNormalAt(const Point3f_t& point) const override {
+        return normal_;
     }
+
+    __host__ __device__ const Point3f_t* getVertices() const {
+        return vertices_;
+    }
+
 };
 
 // Rectangle polygon implementation
@@ -124,7 +134,7 @@ public:
 
         // First intersect with the plane containing the rectangle
         const float denom = dot(normal_, ray.direction);
-        
+
         // Check if ray is parallel to plane
         if (fabsf(denom) < 1e-8f)
             return hit;
@@ -155,4 +165,4 @@ public:
 
         return hit;
     }
-}; 
+};
