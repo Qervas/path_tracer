@@ -12,8 +12,10 @@
 __constant__ GPUCamera d_camera;
 __constant__ GPUSphere d_spheres[32];
 __constant__ GPUPlane d_planes[32];
+__constant__ GPUTriangle d_triangles[128];
 __constant__ int d_num_spheres;
 __constant__ int d_num_planes;
+__constant__ int d_num_triangles;
 
 // Device intersection structure
 struct GPUIntersection {
@@ -100,6 +102,53 @@ __device__ Intersection_t intersectPlane(const Ray_t& ray, const GPUPlane& plane
     return isect;
 }
 
+
+__device__ Intersection_t intersectTriangle(const Ray_t& ray, const GPUTriangle& triangle) {
+    Intersection_t hit;
+    hit.hit = false;
+
+    // Möller–Trumbore intersection algorithm
+    Vec3f_t v0 = Vec3f_t::fromFloat3(triangle.v0);
+    Vec3f_t v1 = Vec3f_t::fromFloat3(triangle.v1);
+    Vec3f_t v2 = Vec3f_t::fromFloat3(triangle.v2);
+
+    Vec3f_t edge1 = v1 - v0;
+    Vec3f_t edge2 = v2 - v0;
+    Vec3f_t h = cross(ray.direction, edge2);
+    float a = dot(edge1, h);
+
+    // Check if ray is parallel to triangle
+    if (fabsf(a) < 1e-8f)
+        return hit;
+
+    float f = 1.0f / a;
+    Vec3f_t s = ray.origin - v0;
+    float u = f * dot(s, h);
+
+    if (u < 0.0f || u > 1.0f)
+        return hit;
+
+    Vec3f_t q = cross(s, edge1);
+    float v = f * dot(ray.direction, q);
+
+    if (v < 0.0f || u + v > 1.0f)
+        return hit;
+
+    float t = f * dot(edge2, q);
+
+    if (!ray.isValidDistance(t))
+        return hit;
+
+    hit.hit = true;
+    hit.distance = t;
+    hit.point = ray.at(t);
+    hit.normal = Vec3f_t::fromFloat3(triangle.normal);
+    hit.material = triangle.material;
+    hit.setFaceNormal(ray, hit.normal);
+
+    return hit;
+}
+
 __device__ Intersection_t intersectScene(const Ray_t& ray) {
     Intersection_t closest_hit;
     closest_hit.hit = false;
@@ -120,6 +169,14 @@ __device__ Intersection_t intersectScene(const Ray_t& ray) {
         if (plane_isect.hit && plane_isect.distance < closest_dist) {
             closest_dist = plane_isect.distance;
             closest_hit = plane_isect;
+        }
+    }
+
+    for (int i = 0; i < d_num_triangles; i++) {
+        Intersection_t tri_isect = intersectTriangle(ray, d_triangles[i]);
+        if (tri_isect.hit && tri_isect.distance < closest_dist) {
+            closest_dist = tri_isect.distance;
+            closest_hit = tri_isect;
         }
     }
 

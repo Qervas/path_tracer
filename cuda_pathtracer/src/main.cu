@@ -48,7 +48,7 @@ int main() {
 
         // Create window
         std::cout << "Creating window..." << std::endl;
-        Window_t window(1280, 720, "CUDA Ray Tracer");
+        Window_t window(1920, 1080, "CUDA Ray Tracer");
 
         // Allocate CUDA memory with error checking
         std::cout << "Allocating GPU memory..." << std::endl;
@@ -86,11 +86,13 @@ int main() {
         // Create materials on device
         Material_t *d_white_diffuse = nullptr, *d_red_diffuse = nullptr,
                   *d_green_diffuse = nullptr, *d_light = nullptr,
-                  *d_glass = nullptr, *d_metal = nullptr, *d_glossy = nullptr;
+                  *d_glass = nullptr, *d_metal = nullptr, *d_glossy = nullptr,
+                    *d_mirror = nullptr;
+
 
         MaterialFactory::createMaterialsOnDevice(
             &d_white_diffuse, &d_red_diffuse, &d_green_diffuse,
-            &d_light, &d_glass, &d_metal, &d_glossy
+            &d_light, &d_glass, &d_metal, &d_glossy, &d_mirror
         );
 
         // Create scene objects
@@ -101,13 +103,22 @@ int main() {
             Vec3f_t(0.0f, 1.0f, 0.0f), d_white_diffuse));  // Floor
         scene_manager.addObject(new Plane_t(Point3f_t(0.0f, 2.0f, 0.0f),
             Vec3f_t(0.0f, -1.0f, 0.0f), d_white_diffuse)); // Ceiling
-        scene_manager.addObject(new Plane_t(Point3f_t(0.0f, 0.0f, -2.0f),
-            Vec3f_t(0.0f, 0.0f, 1.0f), d_white_diffuse));  // Back wall
+
         scene_manager.addObject(new Plane_t(Point3f_t(-2.0f, 0.0f, 0.0f),
             Vec3f_t(1.0f, 0.0f, 0.0f), d_red_diffuse));    // Left wall
         scene_manager.addObject(new Plane_t(Point3f_t(2.0f, 0.0f, 0.0f),
             Vec3f_t(-1.0f, 0.0f, 0.0f), d_green_diffuse)); // Right wall
+        scene_manager.addObject(new Plane_t(
+            Point3f_t(0.0f, 0.0f, -2.0f),  // Back wall
+            Vec3f_t(0.0f, 0.0f, 1.0f),
+            d_mirror
+        ));
 
+        scene_manager.addObject(new Plane_t(
+            Point3f_t(0.0f, 0.0f, 2.0f),   // Front wall
+            Vec3f_t(0.0f, 0.0f, -1.0f),    // Note the opposite normal
+            d_mirror
+        ));
         // Three main spheres showcasing different materials
         // Center: Large glass sphere (pure specular)
         auto glass_sphere = new Sphere_t(Point3f_t(0.0f, -1.0f, 0.0f),
@@ -155,6 +166,38 @@ int main() {
             0.15f, d_light);
         orange_light->makeEmissive(Color_t(1.0f, 0.5f, 0.0f), 10.0f);
         scene_manager.addObject(orange_light);
+
+        float tetra_radius = 0.6f;  // Size of the tetrahedron
+        Point3f_t tetra_vertices[4] = {
+            Point3f_t(0, tetra_radius, 0),                    // Top
+            Point3f_t(-tetra_radius, -tetra_radius, tetra_radius),   // Front left
+            Point3f_t(tetra_radius, -tetra_radius, tetra_radius),    // Front right
+            Point3f_t(0, -tetra_radius, -tetra_radius)        // Back
+        };
+
+        // Create and position the tetrahedron
+        Vec3f_t tetra_position(-0.6f, 0.0f, -1.0f);
+        for (int i = 0; i < 4; ++i) {
+            tetra_vertices[i] += tetra_position;
+        }
+
+        //tetrahedron faces
+        const uint8_t face_indices[4][3] = {
+            {0, 2, 1},  // Bottom face
+            {0, 1, 3},  // Front face
+            {1, 2, 3},  // Right face
+            {2, 0, 3}   // Left face
+        };
+
+        for (int i = 0; i < 4; ++i) {
+            auto triangle = new Triangle_t(
+                tetra_vertices[face_indices[i][0]],
+                tetra_vertices[face_indices[i][1]],
+                tetra_vertices[face_indices[i][2]],
+                d_glass
+            );
+            scene_manager.addObject(triangle);
+        }
         // Upload scene to GPU
         scene_manager.uploadToGPU();
 
@@ -170,6 +213,8 @@ int main() {
 
         std::vector<GPUSphere> h_spheres;
         std::vector<GPUPlane> h_planes;
+        std::vector<GPUTriangle> h_triangles;
+
 
         // Process all objects once
         for (const auto& obj : scene_manager.getHostScene().h_implicit_objects) {
@@ -198,6 +243,20 @@ int main() {
             }
         }
 
+        for (const auto& obj : scene_manager.getHostScene().h_implicit_objects) {
+            if (auto triangle = dynamic_cast<const Triangle_t*>(obj)) {
+                GPUTriangle gpu_triangle;
+                const auto vertices = triangle->getVertices();
+                gpu_triangle.v0 = make_float3(vertices[0].x, vertices[0].y, vertices[0].z);
+                gpu_triangle.v1 = make_float3(vertices[1].x, vertices[1].y, vertices[1].z);
+                gpu_triangle.v2 = make_float3(vertices[2].x, vertices[2].y, vertices[2].z);
+                Vec3f_t normal = triangle->getNormalAt(vertices[0]);
+                gpu_triangle.normal = make_float3(normal.x, normal.y, normal.z);
+                gpu_triangle.material = triangle->getMaterial();
+                h_triangles.push_back(gpu_triangle);
+            }
+        }
+
         // Upload constants once - only do this once
         int num_spheres = static_cast<int>(h_spheres.size());
         CUDA_CHECK(cudaMemcpyToSymbol(d_num_spheres, &num_spheres, sizeof(int)));
@@ -209,6 +268,13 @@ int main() {
         CUDA_CHECK(cudaMemcpyToSymbol(d_num_planes, &num_planes, sizeof(int)));
         if (num_planes > 0) {
             CUDA_CHECK(cudaMemcpyToSymbol(d_planes, h_planes.data(), h_planes.size() * sizeof(GPUPlane)));
+        }
+
+        int num_triangles = static_cast<int>(h_triangles.size());
+        CUDA_CHECK(cudaMemcpyToSymbol(d_num_triangles, &num_triangles, sizeof(int)));
+        if (num_triangles > 0) {
+            CUDA_CHECK(cudaMemcpyToSymbol(d_triangles, h_triangles.data(),
+                                         h_triangles.size() * sizeof(GPUTriangle)));
         }
 
         initializeGPUData(camera, scene_manager.getDeviceScene());
@@ -230,7 +296,7 @@ int main() {
             auto frame_time = std::chrono::duration_cast<std::chrono::milliseconds>(
                 frame_end - frame_start).count();
 
-            std::string title = "CUDA Ray Tracer - FPS: " + std::to_string(1000.0f / frame_time);
+            std::string title = "CUDA Path Tracer - FPS: " + std::to_string(1000.0f / frame_time);
             window.setTitle(title.c_str());
 
             frame_count++;
@@ -242,7 +308,7 @@ int main() {
         // Cleanup materials before exit
         MaterialFactory::cleanup(
             d_white_diffuse, d_red_diffuse, d_green_diffuse,
-            d_light, d_glass, d_metal, d_glossy
+            d_light, d_glass, d_metal, d_glossy, d_mirror
         );
 
     } catch (const std::exception& e) {

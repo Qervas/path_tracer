@@ -32,12 +32,20 @@ struct GPUPlane {
     Material_t* material;
 };
 
+struct GPUTriangle {
+    float3 v0, v1, v2;
+    float3 normal;
+    Material_t* material;
+};
+
 // Declare external constants
 extern __constant__ GPUCamera d_camera;
 extern __constant__ GPUSphere d_spheres[32];
 extern __constant__ GPUPlane d_planes[32];
+extern __constant__ GPUTriangle d_triangles[128];
 extern __constant__ int d_num_spheres;
 extern __constant__ int d_num_planes;
+extern __constant__ int d_num_triangles;
 
 // Kernel declaration
 extern "C" void launchRenderKernel(float4* output, uint32_t width, uint32_t height, uint32_t frame_count, dim3 grid, dim3 block);
