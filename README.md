@@ -108,6 +108,5 @@ Both implementations use:
 - Real-time progressive refinement
 - Various material types (diffuse, glossy, specular, glass)
 - Scene management with implicit objects
-- Interactive camera controls
+- Interactive camera controls(Cuda version has bugs)
 
-The key difference is that the CUDA version leverages massive GPU parallelization to achieve real-time performance, while the CPU version demonstrates why such parallelization is necessary for interactive path tracing.
