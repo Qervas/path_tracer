@@ -281,4 +281,5 @@ public:
     }
 
     __host__ Scene_t* getDeviceScene() const { return d_scene; }
+    __host__ const Scene_t& getHostScene() const { return h_scene; }
 }; 

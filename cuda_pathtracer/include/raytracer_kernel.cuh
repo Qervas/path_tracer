@@ -34,8 +34,8 @@ struct GPUPlane {
 
 // Declare external constants
 extern __constant__ GPUCamera d_camera;
-extern __constant__ GPUSphere d_spheres[16];
-extern __constant__ GPUPlane d_planes[16];
+extern __constant__ GPUSphere d_spheres[32];
+extern __constant__ GPUPlane d_planes[32];
 extern __constant__ int d_num_spheres;
 extern __constant__ int d_num_planes;
 
@@ -43,4 +43,4 @@ extern __constant__ int d_num_planes;
 extern "C" void launchRenderKernel(float4* output, uint32_t width, uint32_t height, uint32_t frame_count, dim3 grid, dim3 block);
 
 // Host functions for initialization
-void initializeGPUData(const Camera_t& camera, const Scene_t* scene); 
+void initializeGPUData(const Camera_t& camera, const Scene_t* scene);

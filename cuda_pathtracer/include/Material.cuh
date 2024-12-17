@@ -175,6 +175,62 @@ public:
     }
 };
 
+class Glossy_t : public Material_t {
+private:
+    Color_t albedo_;
+    float roughness_;
+    float metallic_;
+
+public:
+    __device__ Glossy_t(const Color_t& albedo, float roughness, float metallic = 1.0f)
+        : albedo_(albedo)
+        , roughness_(roughness)
+        , metallic_(metallic)
+    {}
+
+    __device__ bool scatter(const Ray_t& ray_in, const Intersection_t& isect, ScatterRecord_t& srec, curandState* rand_state) const override {
+        Vec3f_t reflected = reflect(ray_in.direction, isect.normal);
+
+        // Add randomness based on roughness
+        Vec3f_t random_vec = Random_t::randomUnitVector(rand_state);
+        Vec3f_t scattered_direction = reflected + random_vec * roughness_;
+        scattered_direction = scattered_direction.normalized();
+
+        // Ensure the scattered ray is above the surface
+        if (dot(scattered_direction, isect.normal) < 0) {
+            scattered_direction = reflected;
+        }
+
+        srec.scattered_ray = Ray_t(isect.point, scattered_direction, Ray_t::Type::REFLECTED);
+
+        // Interpolate between metallic reflection and diffuse reflection
+        Color_t specular_color = metallic_ > 0.5f ? albedo_ : Color_t(1.0f);
+        srec.attenuation = lerp(albedo_, specular_color, metallic_);
+
+        srec.pdf = 1.0f;
+        srec.is_specular = true;
+        return true;
+    }
+
+    __device__ float scatteringPdf(const Ray_t& ray_in, const Intersection_t& isect, const Ray_t& scattered) const override {
+        return 1.0f;
+    }
+
+private:
+    __device__ static Vec3f_t reflect(const Vec3f_t& v, const Vec3f_t& n) {
+        return v - 2.0f * dot(v, n) * n;
+    }
+
+    __device__ static Color_t lerp(const Color_t& a, const Color_t& b, float t) {
+        return Color_t(
+            a.r * (1.0f - t) + b.r * t,
+            a.g * (1.0f - t) + b.g * t,
+            a.b * (1.0f - t) + b.b * t
+        );
+    }
+};
+
+
 // Emissive material
 class Emissive_t : public Material_t {
 private:

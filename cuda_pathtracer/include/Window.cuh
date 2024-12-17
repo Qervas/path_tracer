@@ -126,9 +126,8 @@ public:
         XFlush(display_);
     }
 
-    __host__ bool processEvents(float& mouse_dx, float& mouse_dy) {
+     __host__ bool processEvents() {
         XEvent event;
-        mouse_dx = mouse_dy = 0;
 
         while (XPending(display_)) {
             XNextEvent(display_, &event);
@@ -136,27 +135,13 @@ public:
                 case KeyPress: {
                     KeySym key = XkbKeycodeToKeysym(display_, event.xkey.keycode, 0, 0);
                     if (key == XK_Escape) running_ = false;
-                    if (key == XK_Tab) toggleMouseCapture();
-                    if (key < 256) key_states_[key] = true;
-                    break;
-                }
-                case KeyRelease: {
-                    KeySym key = XkbKeycodeToKeysym(display_, event.xkey.keycode, 0, 0);
-                    if (key < 256) key_states_[key] = false;
-                    break;
-                }
-                case MotionNotify: {
-                    if (mouse_captured_) {
-                        mouse_dx = static_cast<float>(event.xmotion.x - center_x_);
-                        mouse_dy = static_cast<float>(event.xmotion.y - center_y_);
-                        XWarpPointer(display_, None, window_, 0, 0, 0, 0, center_x_, center_y_);
-                    }
                     break;
                 }
             }
         }
         return running_;
     }
+
 
     // method to call the kernel
     void convertToRGBA(const float4* input, uint32_t* output) {
