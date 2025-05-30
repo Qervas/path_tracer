@@ -7,7 +7,7 @@ This repository contains two implementations of a path tracer: one using CUDA fo
     <td align="center" width="50%">
       <img src="images/cuda.png" width="400px"/>
       <br>
-      <strong>CUDA Path Tracer (160 FPS)</strong>
+      <strong>CUDA Path Tracer (40 FPS)</strong>
     </td>
     <td align="center" width="50%">
       <img src="images/cpu.png" width="400px"/>
@@ -41,7 +41,7 @@ The scene features:
 ## Performance Comparison
 
 ### CUDA Path Tracer
-- **Frame Rate**: 160 FPS on 4060 GPU
+- **Frame Rate**: 40 FPS on 4060 GPU
 - **Resolution**: 1280x720
 - **Features**:
   - Real-time rendering
